@@ -1,0 +1,2 @@
+ALTER TABLE feedback ADD COLUMN status TEXT NOT NULL DEFAULT 'open';
+ALTER TABLE feedback ADD COLUMN closed_at TEXT;

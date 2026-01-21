@@ -132,10 +132,27 @@ export default {
 			// if (!auth) return new Response('Unauthorized', { status: 401 });
 
 			const { results } = await env.FEEDBACK_DB.prepare(
-				`SELECT * FROM feedback ORDER BY gravity_score DESC, created_at DESC LIMIT 10`
+				`SELECT * FROM feedback WHERE status='open' ORDER BY gravity_score DESC, created_at DESC LIMIT 10`
 			).all();
 			return new Response(htmlDashboard(results), {
 				headers: { 'Content-Type': 'text/html' },
+			});
+		}
+
+		// POST /issue/close - Close an issue
+		if (request.method === 'POST' && url.pathname === '/issue/close') {
+			// const auth = requireAuth(request);
+			// if (!auth) return new Response('Unauthorized', { status: 401 });
+
+			const body = await request.json() as { id: string };
+			if (!body.id) return new Response('Missing ID', { status: 400 });
+
+			await env.FEEDBACK_DB.prepare(
+				`UPDATE feedback SET status='closed', closed_at = ? WHERE id = ?`
+			).bind(new Date().toISOString(), body.id).run();
+
+			return new Response(JSON.stringify({ ok: true, status: 'closed' }), {
+				headers: { 'Content-Type': 'application/json' }
 			});
 		}
 
@@ -267,17 +284,19 @@ Rules:
 				const { intent, params } = intentData;
 
 				if (intent === 'top_issues') {
-					const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback ORDER BY gravity_score DESC, created_at DESC LIMIT 10`).all();
-					results = res.results;
+					const result = await env.FEEDBACK_DB.prepare(
+						`SELECT * FROM feedback WHERE status='open' ORDER BY gravity_score DESC, created_at DESC LIMIT 10`
+					).all();
+					results = result.results;
 				} else if (intent === 'bugs_recent') {
-					const hours = params.hours || 24;
-					const date = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
-					const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE category='Bug' AND created_at >= ? ORDER BY gravity_score DESC, created_at DESC LIMIT 10`).bind(date).all();
+					const days = params.days || (params.hours ? params.hours / 24 : 1);
+					const date = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+					const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE status='open' AND category='Bug' AND created_at >= ? ORDER BY gravity_score DESC, created_at DESC LIMIT 10`).bind(date).all();
 					results = res.results;
 				} else if (intent === 'search') {
 					const term = intentData.params.term || '';
 					const result = await env.FEEDBACK_DB.prepare(
-						`SELECT * FROM feedback WHERE content LIKE ? OR category LIKE ? ORDER BY gravity_score DESC LIMIT 10`
+						`SELECT * FROM feedback WHERE status='open' AND (content LIKE ? OR category LIKE ?) ORDER BY gravity_score DESC LIMIT 10`
 					).bind(`%${term}%`, `%${term}%`).all();
 					results = result.results;
 				} else if (intent === 'issue_drilldown') {
@@ -291,7 +310,7 @@ Rules:
 				} else if (intent === 'summary') {
 					const days = params.days || 7;
 					const date = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-					const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE created_at >= ? ORDER BY created_at DESC LIMIT 50`).bind(date).all();
+					const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE status='open' AND created_at >= ? ORDER BY gravity_score DESC`).bind(date).all();
 					results = res.results;
 				} else if (intent === 'issue_drilldown') {
 					const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE id = ? LIMIT 1`).bind(params.id).all();
@@ -556,16 +575,21 @@ function htmlUI(topIssues: any[] = []) {
                     </div>
                 </div>
 
-                <!-- Footer -->
-                <div class="p-4 bg-slate-950/30 rounded-b-2xl border-t border-slate-800 flex flex-col gap-3">
+                    <div class="p-4 bg-slate-950/30 rounded-b-2xl border-t border-slate-800 flex flex-col gap-3">
                     <div class="flex items-center gap-2 text-emerald-400 bg-emerald-900/20 px-3 py-1.5 rounded-lg border border-emerald-900/50 w-full">
                         <span class="text-xs font-bold uppercase tracking-wider opacity-75">Suggestion:</span>
                         <span id="modalNextStep" class="text-sm font-medium truncate">...</span>
                     </div>
                     
-                    <button id="askCopilotBtn" onclick="askCopilot()" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white py-2 rounded-lg text-sm font-medium transition-all border border-slate-700 hover:border-purple-500/50 flex items-center justify-center gap-2">
-                        <span class="text-purple-400">✨</span> Ask Copilot about this issue
-                    </button>
+                    <div class="flex gap-2">
+                         <button id="askCopilotBtn" onclick="askCopilot()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white py-2 rounded-lg text-sm font-medium transition-all border border-slate-700 hover:border-purple-500/50 flex items-center justify-center gap-2">
+                            <span class="text-purple-400">✨</span> Ask Copilot
+                        </button>
+                         <button id="closeIssueBtn" onclick="closeIssue()" class="flex-1 bg-red-900/20 hover:bg-red-900/40 text-red-300 py-2 rounded-lg text-sm font-medium transition-all border border-red-900/50 hover:border-red-500/50 flex items-center justify-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                            Close Issue
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -683,7 +707,13 @@ function htmlUI(topIssues: any[] = []) {
                 document.getElementById('copilotSection').classList.add('animate-pulse');
                 document.getElementById('copilotContent').innerText = 'Thinking...';
                 document.getElementById('askCopilotBtn').disabled = false;
-                document.getElementById('askCopilotBtn').innerHTML = '<span class="text-purple-400">✨</span> Ask Copilot about this issue';
+                document.getElementById('askCopilotBtn').innerHTML = '<span class="text-purple-400">✨</span> Ask Copilot';
+
+                // Reset Close Button
+                const closeBtn = document.getElementById('closeIssueBtn');
+                closeBtn.disabled = false;
+                closeBtn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Close Issue';
+                closeBtn.className = "flex-1 bg-red-900/20 hover:bg-red-900/40 text-red-300 py-2 rounded-lg text-sm font-medium transition-all border border-red-900/50 hover:border-red-500/50 flex items-center justify-center gap-2";
 
                 // Show modal with loading state
                 const modal = document.getElementById('detailModal');
@@ -728,8 +758,43 @@ function htmlUI(topIssues: any[] = []) {
                     badge.className = \`text-xs font-bold px-2 py-1 rounded border \${badgeClass}\`;
                     badge.innerText = heatTxt;
 
+                    // Status Check
+                    if (data.status === 'closed') {
+                         closeBtn.disabled = true;
+                         closeBtn.innerHTML = "Closed ✓";
+                         closeBtn.className = "flex-1 bg-slate-800/50 text-slate-500 py-2 rounded-lg text-sm font-medium border border-slate-800 cursor-not-allowed flex items-center justify-center gap-2";
+                    }
+
                 } catch (e) {
                      document.getElementById('modalContentText').innerHTML = \`<span class="text-red-400">Error: \${e.message}</span>\`;
+                }
+            }
+
+            async function closeIssue() {
+                if (!confirm("Are you sure you want to mark this issue as closed?")) return;
+                
+                const btn = document.getElementById('closeIssueBtn');
+                const originalText = btn.innerHTML;
+                btn.innerHTML = "Closing...";
+                btn.disabled = true;
+
+                try {
+                     const res = await fetch('/issue/close', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ id: currentIssueId })
+                    });
+                    if (!res.ok) throw new Error('Failed to close');
+                    
+                    // Success UI
+                    btn.innerHTML = "Closed ✓";
+                    btn.className = "flex-1 bg-slate-800/50 text-slate-500 py-2 rounded-lg text-sm font-medium border border-slate-800 cursor-not-allowed flex items-center justify-center gap-2";
+                    
+                    // Allow to close modal after short delay or manually
+                } catch (e) {
+                    alert(e.message);
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
                 }
             }
 

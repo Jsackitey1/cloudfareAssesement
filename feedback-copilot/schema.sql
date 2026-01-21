@@ -7,5 +7,7 @@ CREATE TABLE feedback (
   category TEXT, 
   explanation TEXT, 
   gravity_score REAL, 
-  created_at TEXT 
+  created_at TEXT,
+  status TEXT DEFAULT 'open',
+  closed_at TEXT
 );
