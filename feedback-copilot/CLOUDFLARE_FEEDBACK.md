@@ -36,6 +36,14 @@ This document tracks challenges encountered while building the `feedback-copilot
 - **Configuration Sync**: There was a mismatch between `wrangler.toml` bindings (`FEEDBACK_DB`) and `worker-configuration.d.ts` (`DB`), requiring manual code fixes to get types working.
 - **Circular Dependency**: Creating a D1 database requires a two-step process: run `create` command -> copy ID -> paste into `wrangler.toml`. A more declarative approach would be smoother.
 
+### AI & LLM Limitations
+- **Token Limits & JSON**: When requesting complex JSON schemas (like our Card UI), the default token limit for `@cf/meta/llama-3-8b-instruct` is too low, causing JSON to be truncated mid-stream. We had to manually set `max_tokens: 2500`.
+- **JSON Reliability**: Models are chatty and often wrap JSON in markdown blocks (` ```json `) or add preambles. We had to implement robust client-side cleaning (regex replacement, finding outer braces) to prevent `JSON.parse` crashes.
+
+### Local Development Quirks
+- **HEAD Request 404s**: `wrangler dev` (or Miniflare) returned 404s for HEAD requests on routes that worked perfectly with GET. This confused our availability checks.
+- **Port Conflicts**: Running multiple `npm run dev` instances spawned background processes on different ports (8787, 8788, etc.), which sometimes led to "zombie" servers and confusion about which code version was active. Manual `pkill` was required.
+
 ## Positive Cloudflare Experiences
 - **Unified Ecosystem**: Binding D1 (database), Workers AI, and Workflows together in a single `wrangler.toml` feels very powerful and cohesive.
 - **Local Simulation**: `wrangler dev` (local mode) provides an excellent development experience by simulating D1 and Workflows locally, allowing for fast iteration without deployment.
