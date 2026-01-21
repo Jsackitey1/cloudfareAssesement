@@ -117,7 +117,11 @@ export default {
 			const auth = requireAuth(request);
 			if (!auth) return new Response('Unauthorized', { status: 401 });
 
-			return new Response(htmlUI(), {
+			const { results } = await env.FEEDBACK_DB.prepare(
+				`SELECT * FROM feedback ORDER BY gravity_score DESC, created_at DESC LIMIT 5`
+			).all();
+
+			return new Response(htmlUI(results), {
 				headers: { 'Content-Type': 'text/html' },
 			});
 		}
@@ -280,7 +284,17 @@ Do not output markdown tables.`;
 // -----------------------------------------------------------------------------
 // UI Helpers
 // -----------------------------------------------------------------------------
-function htmlUI() {
+function htmlUI(topIssues: any[] = []) {
+	const listItems = topIssues.map(i => `
+        <div class="bg-slate-900/50 p-3 rounded border border-slate-700/50 flex justify-between items-start">
+            <div>
+                <div class="text-sm text-slate-300 font-medium truncate max-w-[300px]">${i.content}</div>
+                <div class="text-xs text-slate-500">${i.category} • ${i.source}</div>
+            </div>
+            <span class="text-xs font-mono font-bold text-purple-400 bg-purple-900/30 px-2 py-1 rounded ml-2">Pull: ${i.gravity_score}</span>
+        </div>
+    `).join('');
+
 	return `
 	<!DOCTYPE html>
 	<html lang="en">
@@ -291,44 +305,94 @@ function htmlUI() {
 		<script src="https://cdn.tailwindcss.com"></script>
 		<script src="https://unpkg.com/marked"></script>
 	</head>
-	<body class="bg-slate-900 text-white min-h-screen p-8">
-		<div class="max-w-4xl mx-auto space-y-8">
-			<header class="flex justify-between items-center">
-				<h1 class="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">Feedback Copilot</h1>
-				<a href="/dashboard" class="text-slate-400 hover:text-white underline">View Dashboard</a>
-			</header>
+	<body class="bg-slate-950 text-white min-h-screen p-8 transition-colors duration-500">
+		<div class="max-w-5xl mx-auto space-y-8 flex gap-8">
+            
+            <!-- Main Chat Area -->
+            <div class="flex-1 space-y-8">
+                <header class="flex justify-between items-center">
+                    <h1 class="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-indigo-400">Feedback Copilot</h1>
+                </header>
 
-			<!-- Chat Section -->
-			<div class="bg-slate-800 p-6 rounded-xl border border-slate-700 h-[600px] flex flex-col">
-				<div id="chatHistory" class="flex-1 overflow-y-auto space-y-4 mb-4 pr-2">
-					<div class="flex justify-start"><div class="bg-slate-700 rounded-lg p-3 max-w-[80%] text-sm">Hello! I'm your Product Feedback Copilot. Ask me about top issues, recent bugs, or summaries.</div></div>
-				</div>
-				
-				<div class="flex gap-2 mb-4 overflow-x-auto pb-2">
-					<button onclick="sendQuick('Show me top issues')" class="whitespace-nowrap bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded-full text-xs text-blue-300 border border-slate-600">Top Issues</button>
-					<button onclick="sendQuick('Show me critical bugs from the last 24h')" class="whitespace-nowrap bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded-full text-xs text-red-300 border border-slate-600">Bugs 24h</button>
-					<button onclick="sendQuick('Give me a weekly summary')" class="whitespace-nowrap bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded-full text-xs text-emerald-300 border border-slate-600">Weekly Summary</button>
-				</div>
+                <div class="bg-slate-900/80 backdrop-blur p-6 rounded-2xl border border-slate-700/50 h-[600px] flex flex-col shadow-2xl shadow-purple-900/10">
+                    <div id="chatHistory" class="flex-1 overflow-y-auto space-y-4 mb-4 pr-2">
+                        <div class="flex justify-start"><div class="bg-slate-800 rounded-2xl rounded-tl-sm p-4 max-w-[85%] text-sm text-slate-200 border border-slate-700">
+                            Hello! I'm your Product Feedback Copilot. I analyze the "pull" of user issues.
+                        </div></div>
+                    </div>
+                    
+                    <div class="flex gap-2 mb-4 overflow-x-auto pb-2 scrollbar-hide">
+                        <button onclick="sendQuick('Show me top issues')" class="whitespace-nowrap bg-slate-800 hover:bg-purple-900/30 hover:border-purple-500/50 px-3 py-1.5 rounded-full text-xs text-purple-300 border border-slate-600 transition-all">🔥 Top Issues</button>
+                        <button onclick="sendQuick('Show me critical bugs from the last 24h')" class="whitespace-nowrap bg-slate-800 hover:bg-red-900/30 hover:border-red-500/50 px-3 py-1.5 rounded-full text-xs text-red-300 border border-slate-600 transition-all">🚨 Bugs 24h</button>
+                        <button onclick="sendQuick('Give me a weekly summary')" class="whitespace-nowrap bg-slate-800 hover:bg-emerald-900/30 hover:border-emerald-500/50 px-3 py-1.5 rounded-full text-xs text-emerald-300 border border-slate-600 transition-all">📊 Weekly Summary</button>
+                    </div>
 
-				<form id="chatForm" class="flex gap-2">
-					<input id="chatInput" type="text" placeholder="Ask your data..." class="flex-1 bg-slate-900 border border-slate-700 rounded p-3 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
-					<button type="submit" class="bg-emerald-600 hover:bg-emerald-500 px-6 py-2 rounded font-medium transition">Send</button>
-				</form>
-			</div>
+                    <form id="chatForm" class="flex gap-3 relative">
+                        <input id="chatInput" type="text" placeholder="Ask about feedback trends..." class="flex-1 bg-slate-950 border border-slate-800 rounded-xl p-4 text-sm focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 outline-none transition-all shadow-inner">
+                        <button type="submit" class="bg-purple-600 hover:bg-purple-500 text-white p-4 rounded-xl font-medium transition-all shadow-lg shadow-purple-900/20">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
+                        </button>
+                    </form>
+                </div>
+            </div>
 
-            <!-- Server-rendered quick list (optional/future) -->
-            <div class="mt-8 pt-8 border-t border-slate-800 text-center text-slate-500 text-sm">
-                Feedback Copilot v1.0
+            <!-- Sidebar -->
+            <div class="w-80 space-y-6">
+                <!-- Navigation -->
+                 <div class="bg-slate-900/80 backdrop-blur p-4 rounded-xl border border-slate-700/50">
+                    <a href="/dashboard" class="block w-full text-center bg-slate-800 hover:bg-slate-700 text-slate-300 py-2 rounded-lg text-sm font-medium transition-colors border border-slate-700">
+                        View Full Dashboard →
+                    </a>
+                </div>
+
+                <!-- Mock Ingest -->
+                <div class="bg-slate-900/80 backdrop-blur p-5 rounded-xl border border-slate-700/50 space-y-3">
+                    <h3 class="text-xs font-bold uppercase tracking-widest text-slate-500">Actions</h3>
+                    <button id="mockIngestBtn" class="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white py-2 rounded-lg text-sm font-bold shadow-lg shadow-purple-900/20 transition-all active:scale-95">
+                        🎲 Mock Ingest
+                    </button>
+                    <p class="text-[10px] text-slate-600 text-center">Generates a random feedback entry</p>
+                </div>
+
+                <!-- Top Pull List -->
+                <div class="bg-slate-900/80 backdrop-blur p-5 rounded-xl border border-slate-700/50 space-y-4">
+                     <h3 class="text-xs font-bold uppercase tracking-widest text-slate-500 flex justify-between">
+                        <span>Top 5 Pull</span>
+                        <span class="text-purple-400">⚡️</span>
+                     </h3>
+                     <div class="space-y-3">
+                        ${listItems || '<div class="text-slate-600 text-xs italic text-center py-4">No data yet</div>'}
+                     </div>
+                </div>
             </div>
 		</div>
 
 		<script>
+            // Mock Ingest Logic
+            document.getElementById('mockIngestBtn').addEventListener('click', async () => {
+                const btn = document.getElementById('mockIngestBtn');
+                const originalText = btn.innerText;
+                btn.innerText = 'Runing...';
+                btn.disabled = true;
+                
+                try {
+                    await fetch('/ingest', { method: 'POST', body: '{}' }); // Empty body triggers random
+                    window.location.reload();
+                } catch(e) {
+                    alert('Ingest failed');
+                    btn.innerText = originalText;
+                    btn.disabled = false;
+                }
+            });
+
 			const chatHistory = document.getElementById('chatHistory');
 			
 			function addMsg(html, isUser) {
 				const div = document.createElement('div');
 				div.className = \`flex \${isUser ? 'justify-end' : 'justify-start'}\`;
-				div.innerHTML = \`<div class="\${isUser ? 'bg-blue-600' : 'bg-slate-700'} rounded-lg p-3 max-w-[85%] text-sm prose prose-invert">\${html}</div>\`;
+				div.innerHTML = isUser 
+                    ? \`<div class="bg-purple-600 text-white rounded-2xl rounded-tr-sm p-3 max-w-[85%] text-sm shadow-md">\${html}</div>\` 
+                    : \`<div class="bg-slate-800 border border-slate-700 text-slate-200 rounded-2xl rounded-tl-sm p-4 max-w-[85%] text-sm shadow-sm prose prose-invert prose-sm">\${html}</div>\`;
 				chatHistory.appendChild(div);
 				chatHistory.scrollTop = chatHistory.scrollHeight;
 			}
@@ -351,7 +415,7 @@ function htmlUI() {
                 const loadingDiv = document.createElement('div');
                 loadingDiv.id = 'loading';
                 loadingDiv.className = 'flex justify-start';
-                loadingDiv.innerHTML = '<div class="bg-slate-700 rounded-lg p-3 text-sm text-slate-400 animate-pulse">Thinking...</div>';
+                loadingDiv.innerHTML = '<div class="bg-slate-800 rounded-2xl rounded-tl-sm p-4 text-sm text-slate-400 animate-pulse border border-slate-700">Thinking...</div>';
                 chatHistory.appendChild(loadingDiv);
                 chatHistory.scrollTop = chatHistory.scrollHeight;
 				
@@ -370,7 +434,6 @@ function htmlUI() {
                     }
 
 					const data = await res.json();
-                    // Render markdown answer
                     addMsg(marked.parse(data.answer), false);
 				} catch(err) {
                     if(document.getElementById('loading')) document.getElementById('loading').remove();
@@ -385,25 +448,35 @@ function htmlUI() {
 
 function htmlDashboard(items: any[]) {
 	const rows = items.map(i => {
-		let badgeColor = 'bg-slate-700 text-slate-300';
-		if (i.gravity_score >= 20) badgeColor = 'bg-red-900 text-red-200 border border-red-700';
-		else if (i.gravity_score >= 10) badgeColor = 'bg-orange-900 text-orange-200 border border-orange-700';
-		else if (i.gravity_score >= 5) badgeColor = 'bg-yellow-900 text-yellow-200 border border-yellow-700';
+		// Physics Theme Badges
+		let badgeClass = 'bg-blue-900/30 text-blue-300 border-blue-700/50';
+		let badgeLabel = 'Low Pull';
+
+		if (i.gravity_score >= 6) {
+			badgeClass = 'bg-red-900/30 text-red-300 border-red-500/50';
+			badgeLabel = 'High Pull';
+		} else if (i.gravity_score >= 3) {
+			badgeClass = 'bg-amber-900/30 text-amber-300 border-amber-500/50';
+			badgeLabel = 'Medium Pull';
+		}
 
 		return `
-		<tr class="border-b border-slate-700 hover:bg-slate-800/50 transition">
+		<tr class="border-b border-slate-800 hover:bg-slate-800/30 transition group">
 			<td class="p-4 font-mono">
-                <span class="px-2 py-1 rounded text-xs font-bold ${badgeColor}">${i.gravity_score}</span>
+                <div class="flex flex-col items-start gap-1">
+                    <span class="text-lg font-bold ${i.gravity_score >= 6 ? 'text-white' : 'text-slate-400'}">${i.gravity_score}</span>
+                    <span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wide font-bold border ${badgeClass}">${badgeLabel}</span>
+                </div>
             </td>
-			<td class="p-4">
-                <span class="px-2 py-1 rounded text-xs bg-slate-800 border border-slate-600">${i.category}</span>
+			<td class="p-4 align-top pt-5">
+                <span class="px-2 py-1 rounded text-xs bg-slate-900 border border-slate-700 text-slate-400">${i.category}</span>
             </td>
-			<td class="p-4 text-slate-300">
-                <div class="mb-1">${i.content}</div>
-                <div class="text-xs text-slate-500 font-mono">${i.explanation || ''}</div>
+			<td class="p-4 align-top pt-5">
+                <div class="mb-1 text-slate-200 group-hover:text-white transition-colors text-sm">${i.content}</div>
+                <div class="text-xs text-slate-500 font-mono border-l-2 border-slate-700 pl-2 mt-1">${i.explanation || 'No analysis'}</div>
             </td>
-			<td class="p-4 text-slate-400 text-sm">${i.source}</td>
-            <td class="p-4 text-slate-500 text-xs text-right whitespace-nowrap">${new Date(i.created_at).toLocaleDateString()}</td>
+			<td class="p-4 text-slate-500 text-xs align-top pt-5">${i.source}</td>
+            <td class="p-4 text-slate-500 text-xs text-right whitespace-nowrap align-top pt-5">${new Date(i.created_at).toLocaleDateString()}</td>
 		</tr>
 	`}).join('');
 
@@ -416,29 +489,32 @@ function htmlDashboard(items: any[]) {
 		<title>Dashboard</title>
 		<script src="https://cdn.tailwindcss.com"></script>
 	</head>
-	<body class="bg-slate-900 text-white min-h-screen p-8">
+	<body class="bg-slate-950 text-white min-h-screen p-8">
 		<div class="max-w-6xl mx-auto">
-			<header class="flex justify-between items-center mb-8">
-				<h1 class="text-3xl font-bold">Feedback Dashboard</h1>
-				<a href="/app" class="text-blue-400 hover:text-blue-300 underline">Back to Copilot</a>
+			<header class="flex justify-between items-center mb-12">
+				<div>
+                    <h1 class="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-indigo-400">Feedback Dashboard</h1>
+                    <p class="text-slate-500 text-sm mt-1">Global issue pull monitoring</p>
+                </div>
+				<a href="/app" class="px-4 py-2 rounded-lg bg-slate-900 border border-slate-700 text-slate-300 hover:text-white hover:border-purple-500 transition-all text-sm font-medium">← Back to Copilot</a>
 			</header>
 			
-			<div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-2xl">
+			<div class="bg-slate-900/50 rounded-2xl border border-slate-800 overflow-hidden shadow-2xl shadow-black/50">
 				<table class="w-full text-left">
-					<thead class="bg-slate-900 text-slate-400 uppercase text-xs tracking-wider">
+					<thead class="bg-slate-900 text-slate-500 uppercase text-[10px] tracking-widest font-bold border-b border-slate-800">
 						<tr>
-							<th class="p-4">Gravity</th>
+							<th class="p-4">Pull Score</th>
 							<th class="p-4">Category</th>
-							<th class="p-4 w-1/2">Feedback</th>
+							<th class="p-4 w-1/2">Feedback Payload</th>
 							<th class="p-4">Source</th>
-                            <th class="p-4 text-right">Date</th>
+                            <th class="p-4 text-right">Captured</th>
 						</tr>
 					</thead>
-					<tbody class="divide-y divide-slate-700">
+					<tbody class="divide-y divide-slate-800/50">
 						${rows}
 					</tbody>
 				</table>
-				${items.length === 0 ? '<div class="p-12 text-center text-slate-500">No feedback found. Ingest some data first!</div>' : ''}
+				${items.length === 0 ? '<div class="p-20 text-center text-slate-600">No feedback found. Use the Copilot to Ingest data.</div>' : ''}
 			</div>
 		</div>
 	</body>
@@ -447,6 +523,10 @@ function htmlDashboard(items: any[]) {
 }
 
 function requireAuth(request: Request): boolean {
+	const url = new URL(request.url);
+	// Allow local dev without headers
+	if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') return true;
+
 	const email = request.headers.get('Cf-Access-Authenticated-User-Email') ||
 		request.headers.get('cf-access-authenticated-user-email');
 	return !!email;

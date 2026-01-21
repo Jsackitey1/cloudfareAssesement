@@ -42,3 +42,27 @@ This document tracks challenges encountered while building the `feedback-copilot
 - **Performance**: The local development server starts instantly, making the feedback loop extremely short.
 
 
+
+# Used Products
+
+## 1. Cloudflare Workers
+**Usage**: The core compute platform hosting the API and serving the HTML UI. `src/index.ts` handles all HTTP requests (`fetch` handler).
+
+## 2. Workers AI
+**Usage**: Powering the intelligence of the application.
+- **Sentiment Analysis**: `FeedbackWorkflow` uses `@cf/meta/llama-3-8b-instruct` to analyze incoming feedback.
+- **Intent Extraction**: The `/chat` endpoint uses Llama-3 to categorize user queries into structured intents (`top_issues`, `search`, etc.).
+- **Grounded Answers**: The `/chat` endpoint uses Llama-3 to generate human-readable responses based on D1 query results (RAG-lite).
+
+## 3. Cloudflare D1 (SQLite)
+**Usage**: The persistence layer.
+- **Schema**: A `feedback` table stores raw content, AI-generated metadata (sentiment, gravity score), and timestamps.
+- **Queries**: Used for dashboard listing (`ORDER BY gravity_score DESC`) and dynamic chat queries (`WHERE content LIKE ?`).
+
+## 4. Cloudflare Workflows
+**Usage**: Asynchronous processing pipeline.
+- **Ingestion**: `FeedbackWorkflow` decouples the ingestion API (`POST /ingest`) from the heavy AI processing, ensuring low latency for the API client while performing complex enrichment in the background.
+
+## 5. Cloudflare Access
+**Usage**: Zero Trust security.
+- **Route Protection**: The `/app` and `/dashboard` routes are protected, checking for the `Cf-Access-Authenticated-User-Email` header to ensure only authenticated users can access internal tools.
