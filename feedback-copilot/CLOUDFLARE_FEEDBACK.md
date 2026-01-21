@@ -25,5 +25,11 @@ This document tracks challenges encountered while building the `feedback-copilot
 - [ ] VS Code extension support.
 
 ## Specific user-reported challenges
-*(Add specific notes here)*
+### AI & Typescript
+- **Type Safety**: The `AI` binding is typed as `any` in `src/index.ts`. It would be helpful to have strict types for `env.AI.run` inputs and outputs to match the specific model (e.g. `@cf/meta/llama-3-8b-instruct`).
+- **Structured Output**: Parsing JSON from LLMs requires manual prompt engineering and regex cleaning (`jsonStr.match`). Native structured output support in Workers AI would simplify `FeedbackWorkflow`.
+
+### Developer Experience
+- *[User Input Needed: Please describe any setup or CLI issues]*
+
 
