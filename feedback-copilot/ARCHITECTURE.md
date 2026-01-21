@@ -2,6 +2,17 @@
 
 This project implements a "Feedback Copilot" using a fully serverless, edge-native architecture on Cloudflare.
 
+## Bindings at a Glance
+
+![Cloudflare Workers Bindings](./bindings-screenshot.png)
+
+| Binding | Type | Purpose |
+|---------|------|---------|
+| `AI` | Workers AI | LLM inference for analysis and chat |
+| `FEEDBACK_DB` | D1 Database | Persistent storage for feedback data |
+| `INGEST_WORKFLOW` | Workflow | Async processing pipeline |
+
+
 ## Core Components
 
 ### 1. Cloudflare Workers (Compute)
