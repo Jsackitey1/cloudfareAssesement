@@ -220,9 +220,20 @@ Rules:
 				let intentData = { intent: 'help', params: { hours: 0, days: 0, term: '', id: '' } };
 				try {
 					let jsonStr = (intentResp as any).response;
-					const match = jsonStr.match(/\{[\s\S]*\}/);
-					if (match) jsonStr = match[0];
-					intentData = JSON.parse(jsonStr);
+
+					// 1. Strip Markdown Code Blocks
+					jsonStr = jsonStr.replace(/```json/gi, '').replace(/```/g, '');
+
+					// 2. Extract JSON Object (Find outer braces)
+					const firstOpen = jsonStr.indexOf('{');
+					const lastClose = jsonStr.lastIndexOf('}');
+
+					if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
+						jsonStr = jsonStr.substring(firstOpen, lastClose + 1);
+						intentData = JSON.parse(jsonStr);
+					} else {
+						console.error("Intent parsing: No JSON object found");
+					}
 				} catch (e) {
 					// strict default
 					console.error("Intent parsing failed:", e);
