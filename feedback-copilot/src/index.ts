@@ -57,7 +57,7 @@ Rules:
 - If both bug and feature request appear, choose Bug.
 - If mostly negative but not broken, choose UX.`;
 
-			const response = await this.env.AI.run('@cf/meta/llama-3-8b-instruct', {
+			const response = await runAIWithRetry(this.env, '@cf/meta/llama-3-8b-instruct', {
 				messages: [
 					{ role: 'system', content: systemPrompt },
 					{ role: 'user', content: content }
@@ -175,14 +175,15 @@ export default {
 
 		// POST /chat - RAG-lite
 		if (request.method === 'POST' && url.pathname === '/chat') {
-			const auth = requireAuth(request);
-			if (!auth) return new Response('Unauthorized', { status: 401 });
+			try {
+				const auth = requireAuth(request);
+				if (!auth) return new Response('Unauthorized', { status: 401 });
 
-			const body = await request.json() as { query: string };
-			const query = body.query;
+				const body = await request.json() as { query: string };
+				const query = body.query;
 
-			// Step 1: Intent Extraction
-			const intentPrompt = `You are an intent router for a Product Feedback Copilot.
+				// Step 1: Intent Extraction
+				const intentPrompt = `You are an intent router for a Product Feedback Copilot.
 Your only job is to read the user's message and output a SINGLE valid JSON object that matches the schema below exactly. Do not include any other text.
 Schema:
 {
@@ -209,72 +210,98 @@ Rules:
   - help: capabilities/ambiguous
 - If user says show me everything: top_issues.`;
 
-			const intentResp = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
-				messages: [
-					{ role: 'system', content: intentPrompt },
-					{ role: 'user', content: query }
-				]
-			});
+				const intentResp = await runAIWithRetry(env, '@cf/meta/llama-3-8b-instruct', {
+					messages: [
+						{ role: 'system', content: intentPrompt },
+						{ role: 'user', content: query }
+					]
+				});
 
-			let intentData = { intent: 'help', params: { hours: 0, days: 0, term: '', id: '' } };
-			try {
-				let jsonStr = (intentResp as any).response;
-				const match = jsonStr.match(/\{[\s\S]*\}/);
-				if (match) jsonStr = match[0];
-				intentData = JSON.parse(jsonStr);
-			} catch (e) {
-				// strict default
+				let intentData = { intent: 'help', params: { hours: 0, days: 0, term: '', id: '' } };
+				try {
+					let jsonStr = (intentResp as any).response;
+					const match = jsonStr.match(/\{[\s\S]*\}/);
+					if (match) jsonStr = match[0];
+					intentData = JSON.parse(jsonStr);
+				} catch (e) {
+					// strict default
+					console.error("Intent parsing failed:", e);
+				}
+
+				// Step 2: D1 Querying
+				let results: any[] = [];
+				const { intent, params } = intentData;
+
+				if (intent === 'top_issues') {
+					const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback ORDER BY gravity_score DESC, created_at DESC LIMIT 10`).all();
+					results = res.results;
+				} else if (intent === 'bugs_recent') {
+					const hours = params.hours || 24;
+					const date = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+					const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE category='Bug' AND created_at >= ? ORDER BY gravity_score DESC, created_at DESC LIMIT 10`).bind(date).all();
+					results = res.results;
+				} else if (intent === 'search') {
+					const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE content LIKE ? ORDER BY gravity_score DESC, created_at DESC LIMIT 10`).bind(`%${params.term}%`).all();
+					results = res.results;
+				} else if (intent === 'summary') {
+					const days = params.days || 7;
+					const date = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+					const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE created_at >= ? ORDER BY created_at DESC LIMIT 50`).bind(date).all();
+					results = res.results;
+				} else if (intent === 'issue_drilldown') {
+					const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE id = ? LIMIT 1`).bind(params.id).all();
+					results = res.results;
+				}
+
+				// Step 3: Grounded Answer
+				const answerPrompt = `You are a Product Feedback Copilot. Your goal is to provide a clean, high-signal UI using strictly formatted Markdown. Follow these structural rules precisely:
+
+1. **Sequential Numbering**: In the Data Analysis section, every feedback entry must be numbered in a column (e.g., | 1 | ...).
+2. **Mandatory Whitespace**: You must insert two full newlines (\\n\\n) between every section, header, horizontal rule, and table.
+3. **Visual Hierarchy**: 
+   - Use ### for main sections.
+   - Use --- on its own line for separation.
+   - **Bold** only critical data (Pull scores > 15 and status keywords).
+
+### Required Output Template
+
+### Executive Summary
+[Brief summary of trends]
+
+---
+
+### Data Analysis
+| # | Pull | Category | Source | Feedback Summary |
+| :--- | :--- | :--- | :--- | :--- |
+| 1 | **20** | Bug | user-A | ... |
+| 2 | 5 | Feature | user-B | ... |
+
+---
+
+### Action Plan
+> **Priority 1**: [Numbered actionable step]
+> **Priority 2**: [Numbered actionable step]
+
+Do not invent data. If TOOL_DATA is empty, state that clearly.`;
+
+				const toolData = `TOOL_DATA: ${JSON.stringify(results)}`;
+				const answerResp = await runAIWithRetry(env, '@cf/meta/llama-3-8b-instruct', {
+					messages: [
+						{ role: 'system', content: answerPrompt },
+						{ role: 'user', content: `User Query: ${query}\n\n${toolData}` }
+					]
+				});
+
+				return new Response(JSON.stringify({ answer: (answerResp as any).response, intent, rows: results }), {
+					headers: { 'Content-Type': 'application/json' }
+				});
+			} catch (err: any) {
+				console.error("Chat Error:", err);
+				return new Response(JSON.stringify({ error: err.message, stack: err.stack }), {
+					status: 500,
+					headers: { 'Content-Type': 'application/json' }
+				});
 			}
-
-			// Step 2: D1 Querying
-			let results: any[] = [];
-			const { intent, params } = intentData;
-
-			if (intent === 'top_issues') {
-				const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback ORDER BY gravity_score DESC, created_at DESC LIMIT 10`).all();
-				results = res.results;
-			} else if (intent === 'bugs_recent') {
-				const hours = params.hours || 24;
-				const date = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
-				const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE category='Bug' AND created_at >= ? ORDER BY gravity_score DESC, created_at DESC LIMIT 10`).bind(date).all();
-				results = res.results;
-			} else if (intent === 'search') {
-				const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE content LIKE ? ORDER BY gravity_score DESC, created_at DESC LIMIT 10`).bind(`%${params.term}%`).all();
-				results = res.results;
-			} else if (intent === 'summary') {
-				const days = params.days || 7;
-				const date = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-				const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE created_at >= ? ORDER BY created_at DESC LIMIT 50`).bind(date).all();
-				results = res.results;
-			} else if (intent === 'issue_drilldown') {
-				const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE id = ? LIMIT 1`).bind(params.id).all();
-				results = res.results;
-			}
-
-			// Step 3: Grounded Answer
-			const answerPrompt = `You are a Product Feedback Copilot used by PMs.
-You must answer using ONLY the provided data in TOOL_DATA. Do not invent issues, numbers, trends, or ids not present in TOOL_DATA.
-If TOOL_DATA is empty, say you found no matching feedback and suggest a next query the PM could try.
-Tone: concise, PM-friendly, action-oriented.
-Output format:
-- Start with a 1–2 sentence summary.
-- Then bullets of up to 5 items. Each bullet includes:
-  gravity_score, category, source, created_at, short paraphrase, one suggested next step.
-- End with one follow-up question to help next decision.
-Do not mention SQL, databases, or internal tooling.
-Do not output markdown tables.`;
-
-			const toolData = `TOOL_DATA: ${JSON.stringify(results)}`;
-			const answerResp = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
-				messages: [
-					{ role: 'system', content: answerPrompt },
-					{ role: 'user', content: `User Query: ${query}\n\n${toolData}` }
-				]
-			});
-
-			return new Response(JSON.stringify({ answer: (answerResp as any).response, intent, rows: results }), {
-				headers: { 'Content-Type': 'application/json' }
-			});
 		}
 
 		return new Response('Not Found', { status: 404 });
@@ -433,11 +460,30 @@ function htmlUI(topIssues: any[] = []) {
                         return;
                     }
 
+                    if (!res.ok) {
+                        const txt = await res.text();
+                        throw new Error(\`Server error \${res.status}: \${txt}\`);
+                    }
+
 					const data = await res.json();
-                    addMsg(marked.parse(data.answer), false);
+                    
+                    if (!data.answer) {
+                        console.error('No answer in data:', data);
+                        throw new Error('Response missing "answer" field');
+                    }
+                    
+                    if (typeof marked === 'undefined') {
+                        addMsg(data.answer, false);
+                    } else {
+                        // Configure marked for breaks
+                        marked.use({ breaks: true, gfm: true });
+                        addMsg(marked.parse(data.answer), false);
+                    }
+
 				} catch(err) {
+                    console.error(err);
                     if(document.getElementById('loading')) document.getElementById('loading').remove();
-					addMsg('Error getting response.', false);
+					addMsg(\`❌ Error: \${err.message}\`, false);
 				}
 			});
 		</script>
@@ -520,6 +566,20 @@ function htmlDashboard(items: any[]) {
 	</body>
 	</html>
 	`;
+}
+
+
+async function runAIWithRetry(env: Env, model: any, inputs: any, retries = 2) {
+	for (let i = 0; i <= retries; i++) {
+		try {
+			return await env.AI.run(model, inputs);
+		} catch (e: any) {
+			console.error(`AI Attempt ${i + 1} failed:`, e.message);
+			if (i === retries) throw e;
+			// Linear backoff: 1s, 2s...
+			await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+		}
+	}
 }
 
 function requireAuth(request: Request): boolean {
