@@ -139,6 +139,27 @@ export default {
 			});
 		}
 
+		// GET /issue - Drill-down Details
+		if (request.method === 'GET' && url.pathname === '/issue') {
+			// const auth = requireAuth(request);
+			// if (!auth) return new Response('Unauthorized', { status: 401 });
+
+			const id = url.searchParams.get('id');
+			if (!id) return new Response('Missing ID', { status: 400 });
+
+			const result = await env.FEEDBACK_DB.prepare(
+				`SELECT * FROM feedback WHERE id = ? LIMIT 1`
+			).bind(id).first();
+
+			if (!result) return new Response(JSON.stringify({ error: "Issue not found" }), {
+				status: 404, headers: { 'Content-Type': 'application/json' }
+			});
+
+			return new Response(JSON.stringify(result), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+
 		// POST /ingest - Trigger Workflow
 		if (request.method === 'POST' && url.pathname === '/ingest') {
 			let content = '';
@@ -377,9 +398,9 @@ Rules:
 // -----------------------------------------------------------------------------
 function htmlUI(topIssues: any[] = []) {
 	const listItems = topIssues.map(i => `
-        <div class="bg-slate-900/50 p-3 rounded border border-slate-700/50 flex justify-between items-start gap-2">
+        <div onclick="openIssue('${i.id}')" data-issue-id="${i.id}" class="bg-slate-900/50 p-3 rounded border border-slate-700/50 flex justify-between items-start gap-2 cursor-pointer hover:bg-slate-800/80 hover:shadow-lg hover:shadow-purple-900/20 transition-all group">
             <div class="min-w-0 flex-1">
-                <div class="text-sm text-slate-300 font-medium truncate">${i.content}</div>
+                <div class="text-sm text-slate-300 font-medium truncate group-hover:text-purple-300 transition-colors">${i.content}</div>
                 <div class="text-xs text-slate-500">${i.category} • ${i.source}</div>
             </div>
             <span class="text-xs font-mono font-bold text-purple-400 bg-purple-900/30 px-2 py-1 rounded whitespace-nowrap">Pull: ${i.gravity_score}</span>
@@ -459,6 +480,64 @@ function htmlUI(topIssues: any[] = []) {
             </div>
 		</div>
 
+        <!-- Detail Modal -->
+        <div id="detailModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center z-50 p-4 transition-opacity duration-300 opacity-0" onclick="if(event.target === this) closeModal()">
+            <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-2xl shadow-2xl shadow-purple-900/50 transform scale-95 transition-all duration-300" id="modalContent">
+                <!-- Header -->
+                <div class="p-6 border-b border-slate-800 flex justify-between items-start">
+                    <div class="space-y-2">
+                        <div class="flex items-center gap-3">
+                            <span id="modalBadge" class="text-xs font-bold px-2 py-1 rounded border bg-blue-900/30 text-blue-300 border-blue-700/50">High</span>
+                             <span id="modalCategory" class="text-xs text-slate-400 border border-slate-700 px-2 py-1 rounded">Bug</span>
+                             <span id="modalPull" class="text-xs font-mono font-bold text-purple-400 bg-purple-900/30 px-2 py-1 rounded">Pull: 0</span>
+                        </div>
+                         <h2 class="text-xl font-bold text-white leading-tight mt-2" id="modalTitle">Issue Title</h2>
+                    </div>
+                    <button onclick="closeModal()" class="text-slate-500 hover:text-white transition-colors bg-slate-800 hover:bg-slate-700 rounded-lg p-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    </button>
+                </div>
+
+                <!-- Body -->
+                <div class="p-6 space-y-6">
+                    <div>
+                        <h3 class="text-xs font-bold uppercase tracking-widest text-slate-500 mb-2">Feedback</h3>
+                        <p id="modalContentText" class="text-lg text-slate-200 leading-relaxed font-medium">...</p>
+                    </div>
+
+                    <div class="bg-slate-800/50 rounded-xl p-4 border border-slate-700/50">
+                        <h3 class="text-xs font-bold uppercase tracking-widest text-indigo-400 mb-1 flex items-center gap-2">
+                            <span>✨ Analysis</span>
+                        </h3>
+                        <p id="modalExplanation" class="text-sm text-slate-400 leading-relaxed">...</p>
+                    </div>
+
+                    <div class="grid grid-cols-3 gap-4 text-xs text-slate-500 border-t border-slate-800 pt-4">
+                        <div>
+                            <span class="block uppercase tracking-wider font-bold mb-1 opacity-50">Source</span>
+                            <span id="modalSource" class="text-slate-300">...</span>
+                        </div>
+                        <div>
+                            <span class="block uppercase tracking-wider font-bold mb-1 opacity-50">Score</span>
+                            <span id="modalSentiment" class="text-slate-300">...</span>
+                        </div>
+                        <div>
+                            <span class="block uppercase tracking-wider font-bold mb-1 opacity-50">Created</span>
+                            <span id="modalDate" class="text-slate-300">...</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Footer -->
+                <div class="p-4 bg-slate-950/30 rounded-b-2xl border-t border-slate-800 flex justify-between items-center">
+                    <div class="flex items-center gap-2 text-emerald-400 bg-emerald-900/20 px-3 py-1.5 rounded-lg border border-emerald-900/50 w-full">
+                        <span class="text-xs font-bold uppercase tracking-wider opacity-75">Suggestion:</span>
+                        <span id="modalNextStep" class="text-sm font-medium truncate">...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
 		<script>
             // Mock Ingest Logic
             document.getElementById('mockIngestBtn').addEventListener('click', async () => {
@@ -521,7 +600,7 @@ function htmlUI(topIssues: any[] = []) {
                         if (issue.heat === 'Medium') badgeColor = 'bg-amber-900/30 text-amber-300 border-amber-500/50';
 
                         html += \`
-                            <div class="bg-slate-900/40 rounded-lg border border-slate-700/50 p-3 hover:bg-slate-800/60 transition-colors group">
+                            <div onclick="openIssue('\${issue.id}')" data-issue-id="\${issue.id}" class="bg-slate-900/40 rounded-lg border border-slate-700/50 p-3 hover:bg-slate-800/60 transition-colors group cursor-pointer hover:shadow-lg hover:shadow-purple-900/10">
                                 <div class="flex justify-between items-start mb-1">
                                     <div class="flex items-center gap-2">
                                         <span class="text-xs font-bold text-slate-500">#\${issue.rank}</span>
@@ -560,6 +639,70 @@ function htmlUI(topIssues: any[] = []) {
                 document.getElementById('chatInput').value = text;
                 document.getElementById('chatForm').requestSubmit();
             }
+
+            // Modal Logic
+            async function openIssue(id) {
+                // Show modal with loading state
+                const modal = document.getElementById('detailModal');
+                modal.classList.remove('hidden');
+                // Small interaction delay to allow display:block to apply before opacity transition
+                setTimeout(() => {
+                    modal.classList.remove('opacity-0');
+                    document.getElementById('modalContent').classList.remove('scale-95');
+                    document.getElementById('modalContent').classList.add('scale-100');
+                }, 10);
+
+                // Reset content
+                document.getElementById('modalTitle').innerText = 'Loading...';
+                document.getElementById('modalContentText').innerText = 'Fetching details...';
+
+                try {
+                    const res = await fetch(\`/issue?id=\${id}\`);
+                    if(!res.ok) throw new Error('Failed to load');
+                    const data = await res.json();
+
+                    // Populate
+                    document.getElementById('modalTitle').innerText = data.content.substring(0, 50) + (data.content.length > 50 ? '...' : '');
+                    document.getElementById('modalContentText').innerText = data.content;
+                    document.getElementById('modalCategory').innerText = data.category;
+                    document.getElementById('modalPull').innerText = \`Pull: \${data.gravity_score}\`;
+                    document.getElementById('modalSource').innerText = data.source;
+                    document.getElementById('modalSentiment').innerText = data.sentiment;
+                    document.getElementById('modalDate').innerText = new Date(data.created_at).toLocaleDateString();
+                    document.getElementById('modalExplanation').innerText = data.explanation || "No AI explanation available.";
+                    
+                    // Infer next step (mock logic since it's not in DB, or use explanation)
+                    // Ideally this should come from AI, but for now we repurpose the short explanation or a generic msg
+                    // Just purely using explanation as a placeholder for now to match UI requirement
+                    document.getElementById('modalNextStep').innerText = "Triage this issue immediately"; 
+
+                    // Heat Badge Logic
+                    const badge = document.getElementById('modalBadge');
+                    let badgeClass = 'bg-blue-900/30 text-blue-300 border-blue-700/50';
+                    let heatTxt = 'Low';
+                    if (data.gravity_score >= 6) { badgeClass = 'bg-red-900/30 text-red-300 border-red-500/50'; heatTxt = 'High'; }
+                    else if (data.gravity_score >= 3) { badgeClass = 'bg-amber-900/30 text-amber-300 border-amber-500/50'; heatTxt = 'Medium'; }
+                    badge.className = \`text-xs font-bold px-2 py-1 rounded border \${badgeClass}\`;
+                    badge.innerText = heatTxt;
+
+                } catch (e) {
+                     document.getElementById('modalContentText').innerHTML = \`<span class="text-red-400">Error: \${e.message}</span>\`;
+                }
+            }
+
+            function closeModal() {
+                 const modal = document.getElementById('detailModal');
+                 modal.classList.add('opacity-0');
+                 document.getElementById('modalContent').classList.add('scale-95');
+                 setTimeout(() => {
+                    modal.classList.add('hidden');
+                 }, 300);
+            }
+
+            // Close with Escape
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') closeModal();
+            });
 
 			// Add Chat Form Listener
 			document.getElementById('chatForm').addEventListener('submit', async (e) => {
