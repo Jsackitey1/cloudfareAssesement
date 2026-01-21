@@ -114,8 +114,8 @@ export default {
 
 		// GET /app - Chat UI
 		if (request.method === 'GET' && url.pathname === '/app') {
-			const auth = requireAuth(request);
-			if (!auth) return new Response('Unauthorized', { status: 401 });
+			// const auth = requireAuth(request);
+			// if (!auth) return new Response('Unauthorized', { status: 401 });
 
 			const { results } = await env.FEEDBACK_DB.prepare(
 				`SELECT * FROM feedback ORDER BY gravity_score DESC, created_at DESC LIMIT 5`
@@ -128,8 +128,8 @@ export default {
 
 		// GET /dashboard - Simple List
 		if (request.method === 'GET' && url.pathname === '/dashboard') {
-			const auth = requireAuth(request);
-			if (!auth) return new Response('Unauthorized', { status: 401 });
+			// const auth = requireAuth(request);
+			// if (!auth) return new Response('Unauthorized', { status: 401 });
 
 			const { results } = await env.FEEDBACK_DB.prepare(
 				`SELECT * FROM feedback ORDER BY gravity_score DESC, created_at DESC LIMIT 10`
@@ -176,8 +176,8 @@ export default {
 		// POST /chat - RAG-lite
 		if (request.method === 'POST' && url.pathname === '/chat') {
 			try {
-				const auth = requireAuth(request);
-				if (!auth) return new Response('Unauthorized', { status: 401 });
+				// const auth = requireAuth(request);
+				// if (!auth) return new Response('Unauthorized', { status: 401 });
 
 				const body = await request.json() as { query: string };
 				const query = body.query;
@@ -689,12 +689,12 @@ async function runAIWithRetry(env: Env, model: any, inputs: any, retries = 2) {
 	}
 }
 
-function requireAuth(request: Request): boolean {
-	const url = new URL(request.url);
-	// Allow local dev without headers
-	if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') return true;
+// function requireAuth(request: Request): boolean {
+// 	const url = new URL(request.url);
+// 	// Allow local dev without headers
+// 	if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') return true;
 
-	const email = request.headers.get('Cf-Access-Authenticated-User-Email') ||
-		request.headers.get('cf-access-authenticated-user-email');
-	return !!email;
-}
+// 	const email = request.headers.get('Cf-Access-Authenticated-User-Email') ||
+// 		request.headers.get('cf-access-authenticated-user-email');
+// 	return !!email;
+// }
