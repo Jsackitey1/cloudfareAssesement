@@ -304,7 +304,13 @@ Rules:
   summary.headline='No matching feedback found'
   top_issues=[]
   patterns=[]
-  follow_up_question suggests a query refinement.
+  follow_up_question="Show me all feedback"
+- follow_up_question MUST be a valid, executable query string (e.g. "Show me bugs", "Summarize last 7 days", "High priority issues").
+- follow_up_question MUST NOT be a conversational question to the user (e.g. "Would you like to...", "Please specify...").
+- VARY the follow_up_question based on the returned data. Do not always ask for bugs.
+  - If showing bugs -> suggest "Show me features" or "Weekly summary"
+  - If showing summary -> suggest "Show critical issues"
+  - If showing widespread issues -> suggest "Drill down into issue <ID>"
 - title must be short (max 8 words).
 - one_liner max 18 words.
 - next_step max 12 words, action verb first.

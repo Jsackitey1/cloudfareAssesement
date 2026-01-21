@@ -47,6 +47,10 @@ This document tracks challenges encountered while building the `feedback-copilot
 ### Account & Access
 - **Zero Trust Account State**: Detailed that Cloudflare One access was granted even though the Zero Trust account creation process was incomplete/abandoned. Unsure if this is a bug or intended "soft" provisioning state.
 
+### Workers Dashboard & Deployment
+- **Deployment Complexity**: Deploying via the Workers & Pages dashboard was significantly harder than the CLI. Manually configuring the worker path was error-prone and caused initial deployment failures.
+- **Auto-Detection Feature Request**: It would be very helpful if the dashboard automatically detected and suggested the correct Worker path upon connecting a GitHub repository, similar to how other platforms detect frameworks.
+
 ## Positive Cloudflare Experiences
 - **Unified Ecosystem**: Binding D1 (database), Workers AI, and Workflows together in a single `wrangler.toml` feels very powerful and cohesive.
 - **Local Simulation**: `wrangler dev` (local mode) provides an excellent development experience by simulating D1 and Workflows locally, allowing for fast iteration without deployment.
