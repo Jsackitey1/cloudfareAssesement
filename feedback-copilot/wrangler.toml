@@ -1,0 +1,19 @@
+name = "feedback-copilot"
+main = "src/index.ts"
+compatibility_date = "2024-04-05"
+
+# D1 Database
+[[d1_databases]]
+binding = "DB"
+database_name = "feedback-db"
+database_id = "PLACEHOLDER_DB_ID"
+
+# Workers AI
+[ai]
+binding = "AI"
+
+# Workflows
+[[workflows]]
+binding = "WORKFLOW"
+name = "feedback-workflow"
+class_name = "FeedbackWorkflow"
