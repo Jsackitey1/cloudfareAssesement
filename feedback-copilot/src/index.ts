@@ -354,12 +354,12 @@ Rules:
 // -----------------------------------------------------------------------------
 function htmlUI(topIssues: any[] = []) {
 	const listItems = topIssues.map(i => `
-        <div class="bg-slate-900/50 p-3 rounded border border-slate-700/50 flex justify-between items-start">
-            <div>
-                <div class="text-sm text-slate-300 font-medium truncate max-w-[300px]">${i.content}</div>
+        <div class="bg-slate-900/50 p-3 rounded border border-slate-700/50 flex justify-between items-start gap-2">
+            <div class="min-w-0 flex-1">
+                <div class="text-sm text-slate-300 font-medium truncate">${i.content}</div>
                 <div class="text-xs text-slate-500">${i.category} • ${i.source}</div>
             </div>
-            <span class="text-xs font-mono font-bold text-purple-400 bg-purple-900/30 px-2 py-1 rounded ml-2">Pull: ${i.gravity_score}</span>
+            <span class="text-xs font-mono font-bold text-purple-400 bg-purple-900/30 px-2 py-1 rounded whitespace-nowrap">Pull: ${i.gravity_score}</span>
         </div>
     `).join('');
 
