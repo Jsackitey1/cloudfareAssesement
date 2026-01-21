@@ -1,48 +1,81 @@
 import { WorkflowEntrypoint, WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 
 interface Env {
-	FEEDBACK_DB: D1Database;
-	AI: any;
-	INGEST_WORKFLOW: Workflow;
+    FEEDBACK_DB: D1Database;
+    AI: any;
+    INGEST_WORKFLOW: Workflow;
 }
 
 // -----------------------------------------------------------------------------
 // Workflows: Enriches feedback with AI
 // -----------------------------------------------------------------------------
 type FeedbackEvent = {
-	source: string;
-	content: string;
-	created_at?: string;
+    source: string;
+    content: string;
+    created_at?: string;
 };
 
 type AnalysisResult = {
-	sentiment: number;
-	category: "Bug" | "UX" | "Feature" | "Other";
-	explanation: string;
+    sentiment: number;
+    category: "Bug" | "UX" | "Feature" | "Other";
+    explanation: string;
 };
 
 const MESSY_SAMPLES = [
-	"login completely broken fix it!!!",
-	"I love the new dashboard, very clean",
-	"where is the export button? cant find it",
-	"app crashes when I upload large images",
-	"pricing page is confusing as hell",
-	"please add dark mode support",
-	"api returns 500 error on tuesdays",
-	"documentation link is broken",
-	"best tool I've used all year",
-	"loading takes forever on my phone",
-	"can I invite more than 5 users?",
-	"delete my account immediately"
+    // Bugs
+    "login completely broken fix it!!!",
+    "app crashes when I upload large images",
+    "api returns 500 error on tuesdays",
+    "documentation link is broken",
+    "payment failed but still got charged twice",
+    "password reset email never arrives",
+    "search results show deleted items",
+    "notifications are 2 hours delayed",
+    "mobile app freezes after update",
+    "SSO integration stopped working yesterday",
+
+    // UX Issues
+    "where is the export button? cant find it",
+    "pricing page is confusing as hell",
+    "loading takes forever on my phone",
+    "the onboarding flow has too many steps",
+    "can't figure out how to change my timezone",
+    "why do I need to click 5 times to archive?",
+    "font is way too small on the reports page",
+    "navigation menu keeps jumping around",
+    "error messages don't explain what went wrong",
+    "took me 20 minutes to find billing settings",
+
+    // Feature Requests
+    "please add dark mode support",
+    "can I invite more than 5 users?",
+    "need slack integration desperately",
+    "would love to see a calendar view",
+    "can you add webhook support?",
+    "please let us customize email templates",
+    "need ability to bulk delete old records",
+    "API rate limits are too restrictive",
+    "want to export reports as PDF",
+    "need two-factor authentication option",
+
+    // Positive/Other
+    "I love the new dashboard, very clean",
+    "best tool I've used all year",
+    "delete my account immediately",
+    "your support team is amazing, solved my issue in 5 min",
+    "finally a product that just works",
+    "switched from competitor, night and day difference",
+    "the AI suggestions are surprisingly accurate",
+    "clean UI, fast performance, exactly what we needed"
 ];
 
 export class FeedbackWorkflow extends WorkflowEntrypoint<Env, FeedbackEvent> {
-	async run(event: WorkflowEvent<FeedbackEvent>, step: WorkflowStep) {
-		const { content, source, created_at } = event.payload;
+    async run(event: WorkflowEvent<FeedbackEvent>, step: WorkflowStep) {
+        const { content, source, created_at } = event.payload;
 
-		// Step 1: AI Enrichment
-		const analysis = await step.do('ai-enrichment', async () => {
-			const systemPrompt = `You analyze raw user feedback and return STRICT JSON only.
+        // Step 1: AI Enrichment
+        const analysis = await step.do('ai-enrichment', async () => {
+            const systemPrompt = `You analyze raw user feedback and return STRICT JSON only.
 Return exactly this schema:
 { "sentiment": number, "category": "Bug" | "UX" | "Feature" | "Other", "explanation": string }
 Rules:
@@ -57,46 +90,46 @@ Rules:
 - If both bug and feature request appear, choose Bug.
 - If mostly negative but not broken, choose UX.`;
 
-			const response = await runAIWithRetry(this.env, '@cf/meta/llama-3.1-8b-instruct', {
-				messages: [
-					{ role: 'system', content: systemPrompt },
-					{ role: 'user', content: content }
-				]
-			});
+            const response = await runAIWithRetry(this.env, '@cf/meta/llama-3.1-8b-instruct', {
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: content }
+                ]
+            });
 
-			try {
-				// Heuristic cleanup if model outputs markdown code blocks
-				let jsonStr = (response as any).response;
-				const match = jsonStr.match(/\{[\s\S]*\}/);
-				if (match) jsonStr = match[0];
-				return JSON.parse(jsonStr) as AnalysisResult;
-			} catch (e) {
-				return { sentiment: 0, category: 'Other', explanation: 'Failed to analyze' } as AnalysisResult;
-			}
-		});
+            try {
+                // Heuristic cleanup if model outputs markdown code blocks
+                let jsonStr = (response as any).response;
+                const match = jsonStr.match(/\{[\s\S]*\}/);
+                if (match) jsonStr = match[0];
+                return JSON.parse(jsonStr) as AnalysisResult;
+            } catch (e) {
+                return { sentiment: 0, category: 'Other', explanation: 'Failed to analyze' } as AnalysisResult;
+            }
+        });
 
-		// Step 2: Gravity Calculation and Persistence
-		await step.do('calculate-and-store', async () => {
-			// Gravity Calculation
-			const now = new Date();
-			const created = created_at ? new Date(created_at) : now;
-			const ageHours = Math.max(1, Math.floor((now.getTime() - created.getTime()) / (1000 * 60 * 60)));
+        // Step 2: Gravity Calculation and Persistence
+        await step.do('calculate-and-store', async () => {
+            // Gravity Calculation
+            const now = new Date();
+            const created = created_at ? new Date(created_at) : now;
+            const ageHours = Math.max(1, Math.floor((now.getTime() - created.getTime()) / (1000 * 60 * 60)));
 
-			let base = Math.abs(analysis.sentiment) * 10 / ageHours;
-			if (analysis.sentiment < 0 && analysis.category === 'Bug') {
-				base *= 2;
-			}
-			const gravityScore = Math.min(50, Math.round(base * 100) / 100);
+            let base = Math.abs(analysis.sentiment) * 10 / ageHours;
+            if (analysis.sentiment < 0 && analysis.category === 'Bug') {
+                base *= 2;
+            }
+            const gravityScore = Math.min(50, Math.round(base * 100) / 100);
 
-			// Persistence
-			const id = crypto.randomUUID();
-			await this.env.FEEDBACK_DB.prepare(
-				`INSERT INTO feedback (id, content, source, sentiment, gravity_score, category, explanation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-			)
-				.bind(id, content, source, analysis.sentiment, gravityScore, analysis.category, analysis.explanation, created.toISOString())
-				.run();
-		});
-	}
+            // Persistence
+            const id = crypto.randomUUID();
+            await this.env.FEEDBACK_DB.prepare(
+                `INSERT INTO feedback (id, content, source, sentiment, gravity_score, category, explanation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+            )
+                .bind(id, content, source, analysis.sentiment, gravityScore, analysis.category, analysis.explanation, created.toISOString())
+                .run();
+        });
+    }
 }
 
 
@@ -104,124 +137,124 @@ Rules:
 // Main Worker: Router & UI
 // -----------------------------------------------------------------------------
 export default {
-	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		const url = new URL(request.url);
+    async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+        const url = new URL(request.url);
 
-		// Redirect root to /app
-		if (request.method === 'GET' && url.pathname === '/') {
-			return Response.redirect(url.origin + '/app', 302);
-		}
+        // Redirect root to /app
+        if (request.method === 'GET' && url.pathname === '/') {
+            return Response.redirect(url.origin + '/app', 302);
+        }
 
-		// GET /app - Chat UI
-		if (request.method === 'GET' && url.pathname === '/app') {
-			// const auth = requireAuth(request);
-			// if (!auth) return new Response('Unauthorized', { status: 401 });
+        // GET /app - Chat UI
+        if (request.method === 'GET' && url.pathname === '/app') {
+            // const auth = requireAuth(request);
+            // if (!auth) return new Response('Unauthorized', { status: 401 });
 
-			const { results } = await env.FEEDBACK_DB.prepare(
-				`SELECT * FROM feedback ORDER BY gravity_score DESC, created_at DESC LIMIT 5`
-			).all();
+            const { results } = await env.FEEDBACK_DB.prepare(
+                `SELECT * FROM feedback ORDER BY gravity_score DESC, created_at DESC LIMIT 5`
+            ).all();
 
-			return new Response(htmlUI(results), {
-				headers: { 'Content-Type': 'text/html' },
-			});
-		}
+            return new Response(htmlUI(results), {
+                headers: { 'Content-Type': 'text/html' },
+            });
+        }
 
-		// GET /dashboard - Simple List
-		if (request.method === 'GET' && url.pathname === '/dashboard') {
-			// const auth = requireAuth(request);
-			// if (!auth) return new Response('Unauthorized', { status: 401 });
+        // GET /dashboard - Simple List
+        if (request.method === 'GET' && url.pathname === '/dashboard') {
+            // const auth = requireAuth(request);
+            // if (!auth) return new Response('Unauthorized', { status: 401 });
 
-			const { results } = await env.FEEDBACK_DB.prepare(
-				`SELECT * FROM feedback WHERE status='open' ORDER BY gravity_score DESC, created_at DESC LIMIT 10`
-			).all();
-			return new Response(htmlDashboard(results), {
-				headers: { 'Content-Type': 'text/html' },
-			});
-		}
+            const { results } = await env.FEEDBACK_DB.prepare(
+                `SELECT * FROM feedback WHERE status='open' ORDER BY gravity_score DESC, created_at DESC LIMIT 10`
+            ).all();
+            return new Response(htmlDashboard(results), {
+                headers: { 'Content-Type': 'text/html' },
+            });
+        }
 
-		// POST /issue/close - Close an issue
-		if (request.method === 'POST' && url.pathname === '/issue/close') {
-			// const auth = requireAuth(request);
-			// if (!auth) return new Response('Unauthorized', { status: 401 });
+        // POST /issue/close - Close an issue
+        if (request.method === 'POST' && url.pathname === '/issue/close') {
+            // const auth = requireAuth(request);
+            // if (!auth) return new Response('Unauthorized', { status: 401 });
 
-			const body = await request.json() as { id: string };
-			if (!body.id) return new Response('Missing ID', { status: 400 });
+            const body = await request.json() as { id: string };
+            if (!body.id) return new Response('Missing ID', { status: 400 });
 
-			await env.FEEDBACK_DB.prepare(
-				`UPDATE feedback SET status='closed', closed_at = ? WHERE id = ?`
-			).bind(new Date().toISOString(), body.id).run();
+            await env.FEEDBACK_DB.prepare(
+                `UPDATE feedback SET status='closed', closed_at = ? WHERE id = ?`
+            ).bind(new Date().toISOString(), body.id).run();
 
-			return new Response(JSON.stringify({ ok: true, status: 'closed' }), {
-				headers: { 'Content-Type': 'application/json' }
-			});
-		}
+            return new Response(JSON.stringify({ ok: true, status: 'closed' }), {
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
 
-		// GET /issue - Drill-down Details
-		if (request.method === 'GET' && url.pathname === '/issue') {
-			// const auth = requireAuth(request);
-			// if (!auth) return new Response('Unauthorized', { status: 401 });
+        // GET /issue - Drill-down Details
+        if (request.method === 'GET' && url.pathname === '/issue') {
+            // const auth = requireAuth(request);
+            // if (!auth) return new Response('Unauthorized', { status: 401 });
 
-			const id = url.searchParams.get('id');
-			if (!id) return new Response('Missing ID', { status: 400 });
+            const id = url.searchParams.get('id');
+            if (!id) return new Response('Missing ID', { status: 400 });
 
-			const result = await env.FEEDBACK_DB.prepare(
-				`SELECT * FROM feedback WHERE id = ? LIMIT 1`
-			).bind(id).first();
+            const result = await env.FEEDBACK_DB.prepare(
+                `SELECT * FROM feedback WHERE id = ? LIMIT 1`
+            ).bind(id).first();
 
-			if (!result) return new Response(JSON.stringify({ error: "Issue not found" }), {
-				status: 404, headers: { 'Content-Type': 'application/json' }
-			});
+            if (!result) return new Response(JSON.stringify({ error: "Issue not found" }), {
+                status: 404, headers: { 'Content-Type': 'application/json' }
+            });
 
-			return new Response(JSON.stringify(result), {
-				headers: { 'Content-Type': 'application/json' }
-			});
-		}
+            return new Response(JSON.stringify(result), {
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
 
-		// POST /ingest - Trigger Workflow
-		if (request.method === 'POST' && url.pathname === '/ingest') {
-			let content = '';
-			let source = 'api';
+        // POST /ingest - Trigger Workflow
+        if (request.method === 'POST' && url.pathname === '/ingest') {
+            let content = '';
+            let source = 'api';
 
-			try {
-				const body = await request.json() as { text: string; source: string };
-				if (body.text) {
-					content = body.text;
-					source = body.source || 'api';
-				}
-			} catch (e) {
-				// Ignore JSON parse errors, fall through to random sample
-			}
+            try {
+                const body = await request.json() as { text: string; source: string };
+                if (body.text) {
+                    content = body.text;
+                    source = body.source || 'api';
+                }
+            } catch (e) {
+                // Ignore JSON parse errors, fall through to random sample
+            }
 
-			if (!content) {
-				// Pick a random messy sample
-				content = MESSY_SAMPLES[Math.floor(Math.random() * MESSY_SAMPLES.length)];
-				source = 'random-generator';
-			}
+            if (!content) {
+                // Pick a random messy sample
+                content = MESSY_SAMPLES[Math.floor(Math.random() * MESSY_SAMPLES.length)];
+                source = 'random-generator';
+            }
 
-			await env.INGEST_WORKFLOW.create({
-				params: {
-					content,
-					source,
-					created_at: new Date().toISOString()
-				}
-			});
+            await env.INGEST_WORKFLOW.create({
+                params: {
+                    content,
+                    source,
+                    created_at: new Date().toISOString()
+                }
+            });
 
-			return new Response(JSON.stringify({ ok: true, started: true }), {
-				headers: { 'Content-Type': 'application/json' }
-			});
-		}
+            return new Response(JSON.stringify({ ok: true, started: true }), {
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
 
-		// POST /chat - RAG-lite
-		if (request.method === 'POST' && url.pathname === '/chat') {
-			try {
-				// const auth = requireAuth(request);
-				// if (!auth) return new Response('Unauthorized', { status: 401 });
+        // POST /chat - RAG-lite
+        if (request.method === 'POST' && url.pathname === '/chat') {
+            try {
+                // const auth = requireAuth(request);
+                // if (!auth) return new Response('Unauthorized', { status: 401 });
 
-				const body = await request.json() as { message: string, query?: string };
-				const query = body.message || body.query;
+                const body = await request.json() as { message: string, query?: string };
+                const query = body.message || body.query;
 
-				// Step 1: Intent Extraction
-				const intentPrompt = `You are an intent router for a Product Feedback Copilot.
+                // Step 1: Intent Extraction
+                const intentPrompt = `You are an intent router for a Product Feedback Copilot.
 Your only job is to read the user's message and output a SINGLE valid JSON object that matches the schema below exactly. Do not include any other text.
 Schema:
 {
@@ -250,75 +283,75 @@ Rules:
   - help: capabilities/ambiguous
 - If user says show me everything: top_issues.`;
 
-				const intentResp = await runAIWithRetry(env, '@cf/meta/llama-3.1-8b-instruct', {
-					messages: [
-						{ role: 'system', content: intentPrompt },
-						{ role: 'user', content: query }
-					]
-				});
+                const intentResp = await runAIWithRetry(env, '@cf/meta/llama-3.1-8b-instruct', {
+                    messages: [
+                        { role: 'system', content: intentPrompt },
+                        { role: 'user', content: query }
+                    ]
+                });
 
-				let intentData = { intent: 'help', params: { hours: 0, days: 0, term: '', id: '' } };
-				try {
-					let jsonStr = (intentResp as any).response;
+                let intentData = { intent: 'help', params: { hours: 0, days: 0, term: '', id: '' } };
+                try {
+                    let jsonStr = (intentResp as any).response;
 
-					// 1. Strip Markdown Code Blocks
-					jsonStr = jsonStr.replace(/```json/gi, '').replace(/```/g, '');
+                    // 1. Strip Markdown Code Blocks
+                    jsonStr = jsonStr.replace(/```json/gi, '').replace(/```/g, '');
 
-					// 2. Extract JSON Object (Find outer braces)
-					const firstOpen = jsonStr.indexOf('{');
-					const lastClose = jsonStr.lastIndexOf('}');
+                    // 2. Extract JSON Object (Find outer braces)
+                    const firstOpen = jsonStr.indexOf('{');
+                    const lastClose = jsonStr.lastIndexOf('}');
 
-					if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
-						jsonStr = jsonStr.substring(firstOpen, lastClose + 1);
-						intentData = JSON.parse(jsonStr);
-					} else {
-						console.error("Intent parsing: No JSON object found");
-					}
-				} catch (e) {
-					// strict default
-					console.error("Intent parsing failed:", e);
-				}
+                    if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
+                        jsonStr = jsonStr.substring(firstOpen, lastClose + 1);
+                        intentData = JSON.parse(jsonStr);
+                    } else {
+                        console.error("Intent parsing: No JSON object found");
+                    }
+                } catch (e) {
+                    // strict default
+                    console.error("Intent parsing failed:", e);
+                }
 
-				// Step 2: D1 Querying
-				let results: any[] = [];
-				const { intent, params } = intentData;
+                // Step 2: D1 Querying
+                let results: any[] = [];
+                const { intent, params } = intentData;
 
-				if (intent === 'top_issues') {
-					const result = await env.FEEDBACK_DB.prepare(
-						`SELECT * FROM feedback WHERE status='open' ORDER BY gravity_score DESC, created_at DESC LIMIT 10`
-					).all();
-					results = result.results;
-				} else if (intent === 'bugs_recent') {
-					const days = params.days || (params.hours ? params.hours / 24 : 1);
-					const date = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-					const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE status='open' AND category='Bug' AND created_at >= ? ORDER BY gravity_score DESC, created_at DESC LIMIT 10`).bind(date).all();
-					results = res.results;
-				} else if (intent === 'search') {
-					const term = intentData.params.term || '';
-					const result = await env.FEEDBACK_DB.prepare(
-						`SELECT * FROM feedback WHERE status='open' AND (content LIKE ? OR category LIKE ?) ORDER BY gravity_score DESC LIMIT 10`
-					).bind(`%${term}%`, `%${term}%`).all();
-					results = result.results;
-				} else if (intent === 'issue_drilldown') {
-					const id = intentData.params.id || '';
-					if (id) {
-						const result = await env.FEEDBACK_DB.prepare(
-							`SELECT * FROM feedback WHERE id = ? LIMIT 1`
-						).bind(id).first();
-						if (result) results = [result];
-					}
-				} else if (intent === 'summary') {
-					const days = params.days || 7;
-					const date = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-					const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE status='open' AND created_at >= ? ORDER BY gravity_score DESC`).bind(date).all();
-					results = res.results;
-				} else if (intent === 'issue_drilldown') {
-					const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE id = ? LIMIT 1`).bind(params.id).all();
-					results = res.results;
-				}
+                if (intent === 'top_issues') {
+                    const result = await env.FEEDBACK_DB.prepare(
+                        `SELECT * FROM feedback WHERE status='open' ORDER BY gravity_score DESC, created_at DESC LIMIT 10`
+                    ).all();
+                    results = result.results;
+                } else if (intent === 'bugs_recent') {
+                    const days = params.days || (params.hours ? params.hours / 24 : 1);
+                    const date = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+                    const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE status='open' AND category='Bug' AND created_at >= ? ORDER BY gravity_score DESC, created_at DESC LIMIT 10`).bind(date).all();
+                    results = res.results;
+                } else if (intent === 'search') {
+                    const term = intentData.params.term || '';
+                    const result = await env.FEEDBACK_DB.prepare(
+                        `SELECT * FROM feedback WHERE status='open' AND (content LIKE ? OR category LIKE ?) ORDER BY gravity_score DESC LIMIT 10`
+                    ).bind(`%${term}%`, `%${term}%`).all();
+                    results = result.results;
+                } else if (intent === 'issue_drilldown') {
+                    const id = intentData.params.id || '';
+                    if (id) {
+                        const result = await env.FEEDBACK_DB.prepare(
+                            `SELECT * FROM feedback WHERE id = ? LIMIT 1`
+                        ).bind(id).first();
+                        if (result) results = [result];
+                    }
+                } else if (intent === 'summary') {
+                    const days = params.days || 7;
+                    const date = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+                    const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE status='open' AND created_at >= ? ORDER BY gravity_score DESC`).bind(date).all();
+                    results = res.results;
+                } else if (intent === 'issue_drilldown') {
+                    const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE id = ? LIMIT 1`).bind(params.id).all();
+                    results = res.results;
+                }
 
-				// Step 3: Grounded Answer
-				const answerPrompt = `You are a Product Feedback Copilot used by PMs.
+                // Step 3: Grounded Answer
+                const answerPrompt = `You are a Product Feedback Copilot used by PMs.
 Return ONLY valid JSON that matches the schema exactly. Do not include markdown, tables, or extra keys.
 
 Schema:
@@ -378,63 +411,63 @@ Rules:
   else => Low
 - stats should include: total_items, bug_count, ux_count, feature_count (as strings).`;
 
-				const toolData = `TOOL_DATA: ${JSON.stringify(results)}`;
-				const answerResp = await runAIWithRetry(env, '@cf/meta/llama-3.1-8b-instruct', {
-					messages: [
-						{ role: 'system', content: answerPrompt },
-						{ role: 'user', content: `USER_QUESTION: ${query}\nTOOL_DATA: ${toolData}\nNOW_ISO: ${new Date().toISOString()}` }
-					],
-					max_tokens: 2500
-				});
+                const toolData = `TOOL_DATA: ${JSON.stringify(results)}`;
+                const answerResp = await runAIWithRetry(env, '@cf/meta/llama-3.1-8b-instruct', {
+                    messages: [
+                        { role: 'system', content: answerPrompt },
+                        { role: 'user', content: `USER_QUESTION: ${query}\nTOOL_DATA: ${toolData}\nNOW_ISO: ${new Date().toISOString()}` }
+                    ],
+                    max_tokens: 2500
+                });
 
-				let parsedAnswer = {};
-				try {
-					let jsonStr = (answerResp as any).response;
-					console.log("Raw AI Response:", jsonStr);
+                let parsedAnswer = {};
+                try {
+                    let jsonStr = (answerResp as any).response;
+                    console.log("Raw AI Response:", jsonStr);
 
-					// 1. Strip Markdown Code Blocks
-					jsonStr = jsonStr.replace(/```json/gi, '').replace(/```/g, '');
+                    // 1. Strip Markdown Code Blocks
+                    jsonStr = jsonStr.replace(/```json/gi, '').replace(/```/g, '');
 
-					// 2. Extract JSON Object (Find outer braces)
-					const firstOpen = jsonStr.indexOf('{');
-					const lastClose = jsonStr.lastIndexOf('}');
+                    // 2. Extract JSON Object (Find outer braces)
+                    const firstOpen = jsonStr.indexOf('{');
+                    const lastClose = jsonStr.lastIndexOf('}');
 
-					if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
-						jsonStr = jsonStr.substring(firstOpen, lastClose + 1);
-						parsedAnswer = JSON.parse(jsonStr);
-					} else {
-						throw new Error("No JSON object found in response");
-					}
-				} catch (e) {
-					console.error("Failed to parse Final Answer JSON", e);
-					parsedAnswer = {
-						summary: { headline: "Error analyzing data", details: "The AI returned an invalid format.", stats: [] },
-						top_issues: [], patterns: [], follow_up_question: "Try a simpler query."
-					};
-				}
+                    if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
+                        jsonStr = jsonStr.substring(firstOpen, lastClose + 1);
+                        parsedAnswer = JSON.parse(jsonStr);
+                    } else {
+                        throw new Error("No JSON object found in response");
+                    }
+                } catch (e) {
+                    console.error("Failed to parse Final Answer JSON", e);
+                    parsedAnswer = {
+                        summary: { headline: "Error analyzing data", details: "The AI returned an invalid format.", stats: [] },
+                        top_issues: [], patterns: [], follow_up_question: "Try a simpler query."
+                    };
+                }
 
-				return new Response(JSON.stringify(parsedAnswer), {
-					headers: { 'Content-Type': 'application/json' }
-				});
+                return new Response(JSON.stringify(parsedAnswer), {
+                    headers: { 'Content-Type': 'application/json' }
+                });
 
-			} catch (err: any) {
-				console.error("Chat Error:", err);
-				return new Response(JSON.stringify({
-					summary: { headline: "System Error", details: err.message, stats: [] },
-					top_issues: [], patterns: [], follow_up_question: "Please try again later."
-				}), { status: 500, headers: { 'Content-Type': 'application/json' } });
-			}
-		}
+            } catch (err: any) {
+                console.error("Chat Error:", err);
+                return new Response(JSON.stringify({
+                    summary: { headline: "System Error", details: err.message, stats: [] },
+                    top_issues: [], patterns: [], follow_up_question: "Please try again later."
+                }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+            }
+        }
 
-		return new Response('Not Found', { status: 404 });
-	},
+        return new Response('Not Found', { status: 404 });
+    },
 };
 
 // -----------------------------------------------------------------------------
 // UI Helpers
 // -----------------------------------------------------------------------------
 function htmlUI(topIssues: any[] = []) {
-	const listItems = topIssues.map(i => `
+    const listItems = topIssues.map(i => `
         <div onclick="openIssue('${i.id}')" data-issue-id="${i.id}" class="bg-slate-900/50 p-3 rounded border border-slate-700/50 flex justify-between items-start gap-2 cursor-pointer hover:bg-slate-800/80 hover:shadow-lg hover:shadow-purple-900/20 transition-all group">
             <div class="min-w-0 flex-1">
                 <div class="text-sm text-slate-300 font-medium truncate group-hover:text-purple-300 transition-colors">${i.content}</div>
@@ -444,7 +477,7 @@ function htmlUI(topIssues: any[] = []) {
         </div>
     `).join('');
 
-	return `
+    return `
 	<!DOCTYPE html>
 	<html lang="en">
 	<head>
@@ -901,20 +934,20 @@ function htmlUI(topIssues: any[] = []) {
 }
 
 function htmlDashboard(items: any[]) {
-	const cards = items.map(i => {
-		// Physics Theme Badges
-		let badgeClass = 'bg-blue-900/30 text-blue-300 border-blue-700/50';
-		let badgeLabel = 'Low Pull';
+    const cards = items.map(i => {
+        // Physics Theme Badges
+        let badgeClass = 'bg-blue-900/30 text-blue-300 border-blue-700/50';
+        let badgeLabel = 'Low Pull';
 
-		if (i.gravity_score >= 6) {
-			badgeClass = 'bg-red-900/30 text-red-300 border-red-500/50';
-			badgeLabel = 'High Pull';
-		} else if (i.gravity_score >= 3) {
-			badgeClass = 'bg-amber-900/30 text-amber-300 border-amber-500/50';
-			badgeLabel = 'Medium Pull';
-		}
+        if (i.gravity_score >= 6) {
+            badgeClass = 'bg-red-900/30 text-red-300 border-red-500/50';
+            badgeLabel = 'High Pull';
+        } else if (i.gravity_score >= 3) {
+            badgeClass = 'bg-amber-900/30 text-amber-300 border-amber-500/50';
+            badgeLabel = 'Medium Pull';
+        }
 
-		return `
+        return `
 		<div class="bg-slate-900/50 rounded-xl border border-slate-700/50 p-5 hover:bg-slate-800/50 transition-all hover:scale-[1.01] hover:shadow-xl hover:shadow-purple-900/10 flex flex-col gap-3 group">
             <div class="flex justify-between items-start">
                 <div class="flex flex-col">
@@ -938,9 +971,9 @@ function htmlDashboard(items: any[]) {
             </div>
 		</div>
 		`;
-	}).join('');
+    }).join('');
 
-	return `
+    return `
 	<!DOCTYPE html>
 	<html lang="en">
 	<head>
@@ -990,16 +1023,16 @@ function htmlDashboard(items: any[]) {
 
 
 async function runAIWithRetry(env: Env, model: any, inputs: any, retries = 2) {
-	for (let i = 0; i <= retries; i++) {
-		try {
-			return await env.AI.run(model, inputs);
-		} catch (e: any) {
-			console.error(`AI Attempt ${i + 1} failed:`, e.message);
-			if (i === retries) throw e;
-			// Linear backoff: 1s, 2s...
-			await new Promise(r => setTimeout(r, 1000 * (i + 1)));
-		}
-	}
+    for (let i = 0; i <= retries; i++) {
+        try {
+            return await env.AI.run(model, inputs);
+        } catch (e: any) {
+            console.error(`AI Attempt ${i + 1} failed:`, e.message);
+            if (i === retries) throw e;
+            // Linear backoff: 1s, 2s...
+            await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+        }
+    }
 }
 
 // function requireAuth(request: Request): boolean {
