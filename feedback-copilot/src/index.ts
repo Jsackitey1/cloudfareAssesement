@@ -114,6 +114,9 @@ export default {
 
 		// GET /app - Chat UI
 		if (request.method === 'GET' && url.pathname === '/app') {
+			const auth = requireAuth(request);
+			if (!auth) return new Response('Unauthorized', { status: 401 });
+
 			return new Response(htmlUI(), {
 				headers: { 'Content-Type': 'text/html' },
 			});
@@ -121,8 +124,11 @@ export default {
 
 		// GET /dashboard - Simple List
 		if (request.method === 'GET' && url.pathname === '/dashboard') {
+			const auth = requireAuth(request);
+			if (!auth) return new Response('Unauthorized', { status: 401 });
+
 			const { results } = await env.FEEDBACK_DB.prepare(
-				`SELECT * FROM feedback ORDER BY gravity_score DESC, created_at DESC LIMIT 50`
+				`SELECT * FROM feedback ORDER BY gravity_score DESC, created_at DESC LIMIT 10`
 			).all();
 			return new Response(htmlDashboard(results), {
 				headers: { 'Content-Type': 'text/html' },
@@ -165,27 +171,104 @@ export default {
 
 		// POST /chat - RAG-lite
 		if (request.method === 'POST' && url.pathname === '/chat') {
+			const auth = requireAuth(request);
+			if (!auth) return new Response('Unauthorized', { status: 401 });
+
 			const body = await request.json() as { query: string };
 			const query = body.query;
 
-			// 1. Fetch relevant context
-			const { results } = await env.FEEDBACK_DB.prepare(
-				`SELECT content, category, gravity_score, explanation FROM feedback ORDER BY gravity_score DESC LIMIT 20`
-			).all();
-			const context = results.map((r: any) => `- [${r.category}, Score ${r.gravity_score}]: ${r.content} (${r.explanation})`).join('\n');
+			// Step 1: Intent Extraction
+			const intentPrompt = `You are an intent router for a Product Feedback Copilot.
+Your only job is to read the user's message and output a SINGLE valid JSON object that matches the schema below exactly. Do not include any other text.
+Schema:
+{
+  "intent": "top_issues" | "bugs_recent" | "search" | "summary" | "issue_drilldown" | "help",
+  "params": { "hours": number, "days": number, "term": string, "id": string }
+}
+Rules:
+- Always output JSON only. No markdown, no explanations.
+- Use only the intents listed. If request does not match, use "help".
+- params must include ALL keys: hours, days, term, id.
+- If not applicable: hours=0, days=0, term="", id="".
+- Interpret time phrases:
+  - today => hours=24
+  - last day/past day/yesterday => hours=24
+  - last 6 hours => hours=6
+  - this week/last week/past week => days=7
+- Prefer hours if both mentioned, unless the user explicitly wants a weekly summary.
+- Map intent:
+  - top_issues: highest priority/highest pull/most urgent
+  - bugs_recent: bugs/breakages in recent window (default 24h if unspecified)
+  - search: keyword mentions (extract term)
+  - summary: trend summary (default days=7)
+  - issue_drilldown: specific issue id (extract id)
+  - help: capabilities/ambiguous
+- If user says show me everything: top_issues.`;
 
-			// 2. Generate answer
-			const systemPrompt = `You are Feedback Copilot. Answer the user query based on the feedback context provided. Verify your claims with the context.`;
-			const userPrompt = `Context:\n${context}\n\nUser Query: ${query}`;
-
-			const response = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
+			const intentResp = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
 				messages: [
-					{ role: 'system', content: systemPrompt },
-					{ role: 'user', content: userPrompt }
+					{ role: 'system', content: intentPrompt },
+					{ role: 'user', content: query }
 				]
 			});
 
-			return new Response(JSON.stringify({ answer: response.response, contextUsed: results.length }), {
+			let intentData = { intent: 'help', params: { hours: 0, days: 0, term: '', id: '' } };
+			try {
+				let jsonStr = (intentResp as any).response;
+				const match = jsonStr.match(/\{[\s\S]*\}/);
+				if (match) jsonStr = match[0];
+				intentData = JSON.parse(jsonStr);
+			} catch (e) {
+				// strict default
+			}
+
+			// Step 2: D1 Querying
+			let results: any[] = [];
+			const { intent, params } = intentData;
+
+			if (intent === 'top_issues') {
+				const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback ORDER BY gravity_score DESC, created_at DESC LIMIT 10`).all();
+				results = res.results;
+			} else if (intent === 'bugs_recent') {
+				const hours = params.hours || 24;
+				const date = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+				const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE category='Bug' AND created_at >= ? ORDER BY gravity_score DESC, created_at DESC LIMIT 10`).bind(date).all();
+				results = res.results;
+			} else if (intent === 'search') {
+				const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE content LIKE ? ORDER BY gravity_score DESC, created_at DESC LIMIT 10`).bind(`%${params.term}%`).all();
+				results = res.results;
+			} else if (intent === 'summary') {
+				const days = params.days || 7;
+				const date = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+				const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE created_at >= ? ORDER BY created_at DESC LIMIT 50`).bind(date).all();
+				results = res.results;
+			} else if (intent === 'issue_drilldown') {
+				const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE id = ? LIMIT 1`).bind(params.id).all();
+				results = res.results;
+			}
+
+			// Step 3: Grounded Answer
+			const answerPrompt = `You are a Product Feedback Copilot used by PMs.
+You must answer using ONLY the provided data in TOOL_DATA. Do not invent issues, numbers, trends, or ids not present in TOOL_DATA.
+If TOOL_DATA is empty, say you found no matching feedback and suggest a next query the PM could try.
+Tone: concise, PM-friendly, action-oriented.
+Output format:
+- Start with a 1–2 sentence summary.
+- Then bullets of up to 5 items. Each bullet includes:
+  gravity_score, category, source, created_at, short paraphrase, one suggested next step.
+- End with one follow-up question to help next decision.
+Do not mention SQL, databases, or internal tooling.
+Do not output markdown tables.`;
+
+			const toolData = `TOOL_DATA: ${JSON.stringify(results)}`;
+			const answerResp = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
+				messages: [
+					{ role: 'system', content: answerPrompt },
+					{ role: 'user', content: `User Query: ${query}\n\n${toolData}` }
+				]
+			});
+
+			return new Response(JSON.stringify({ answer: (answerResp as any).response, intent, rows: results }), {
 				headers: { 'Content-Type': 'application/json' }
 			});
 		}
@@ -206,69 +289,54 @@ function htmlUI() {
 		<meta name="viewport" content="width=device-width, initial-scale=1.0">
 		<title>Feedback Copilot</title>
 		<script src="https://cdn.tailwindcss.com"></script>
+		<script src="https://unpkg.com/marked"></script>
 	</head>
 	<body class="bg-slate-900 text-white min-h-screen p-8">
-		<div class="max-w-3xl mx-auto space-y-8">
+		<div class="max-w-4xl mx-auto space-y-8">
 			<header class="flex justify-between items-center">
 				<h1 class="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">Feedback Copilot</h1>
 				<a href="/dashboard" class="text-slate-400 hover:text-white underline">View Dashboard</a>
 			</header>
 
-			<!-- Ingest Section -->
-			<div class="bg-slate-800 p-6 rounded-xl border border-slate-700">
-				<h2 class="text-xl font-semibold mb-4">Submit Feedback</h2>
-				<form id="ingestForm" class="space-y-4">
-					<textarea id="feedbackText" placeholder="Describe the issue..." class="w-full bg-slate-900 border border-slate-700 rounded p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none" rows="3"></textarea>
-					<div class="flex gap-4">
-						<input id="source" type="text" placeholder="Source (e.g. twitter)" class="bg-slate-900 border border-slate-700 rounded p-2 text-sm flex-1">
-						<button type="submit" class="bg-blue-600 hover:bg-blue-500 px-6 py-2 rounded font-medium transition">Submit</button>
-					</div>
-				</form>
-				<p id="ingestStatus" class="mt-2 text-sm text-green-400 hidden">Feedback queued!</p>
-			</div>
-
 			<!-- Chat Section -->
-			<div class="bg-slate-800 p-6 rounded-xl border border-slate-700 h-[500px] flex flex-col">
-				<h2 class="text-xl font-semibold mb-4">Ask the Copilot</h2>
+			<div class="bg-slate-800 p-6 rounded-xl border border-slate-700 h-[600px] flex flex-col">
 				<div id="chatHistory" class="flex-1 overflow-y-auto space-y-4 mb-4 pr-2">
-					<div class="flex justify-start"><div class="bg-slate-700 rounded-lg p-3 max-w-[80%] text-sm">Hello! Ask me about top issues or specific feedback categories.</div></div>
+					<div class="flex justify-start"><div class="bg-slate-700 rounded-lg p-3 max-w-[80%] text-sm">Hello! I'm your Product Feedback Copilot. Ask me about top issues, recent bugs, or summaries.</div></div>
 				</div>
+				
+				<div class="flex gap-2 mb-4 overflow-x-auto pb-2">
+					<button onclick="sendQuick('Show me top issues')" class="whitespace-nowrap bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded-full text-xs text-blue-300 border border-slate-600">Top Issues</button>
+					<button onclick="sendQuick('Show me critical bugs from the last 24h')" class="whitespace-nowrap bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded-full text-xs text-red-300 border border-slate-600">Bugs 24h</button>
+					<button onclick="sendQuick('Give me a weekly summary')" class="whitespace-nowrap bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded-full text-xs text-emerald-300 border border-slate-600">Weekly Summary</button>
+				</div>
+
 				<form id="chatForm" class="flex gap-2">
-					<input id="chatInput" type="text" placeholder="What are the top complaints?" class="flex-1 bg-slate-900 border border-slate-700 rounded p-3 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
+					<input id="chatInput" type="text" placeholder="Ask your data..." class="flex-1 bg-slate-900 border border-slate-700 rounded p-3 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
 					<button type="submit" class="bg-emerald-600 hover:bg-emerald-500 px-6 py-2 rounded font-medium transition">Send</button>
 				</form>
 			</div>
+
+            <!-- Server-rendered quick list (optional/future) -->
+            <div class="mt-8 pt-8 border-t border-slate-800 text-center text-slate-500 text-sm">
+                Feedback Copilot v1.0
+            </div>
 		</div>
 
 		<script>
-			// Ingest Logic
-			document.getElementById('ingestForm').addEventListener('submit', async (e) => {
-				e.preventDefault();
-				const text = document.getElementById('feedbackText').value;
-				const source = document.getElementById('source').value;
-				if(!text) return;
-				
-				await fetch('/ingest', {
-					method: 'POST',
-					body: JSON.stringify({ text, source }), // API expects text/source in body, worker maps text->content
-					headers: { 'Content-Type': 'application/json' }
-				});
-				
-				document.getElementById('feedbackText').value = '';
-				const status = document.getElementById('ingestStatus');
-				status.classList.remove('hidden');
-				setTimeout(() => status.classList.add('hidden'), 3000);
-			});
-
-			// Chat Logic
 			const chatHistory = document.getElementById('chatHistory');
-			function addMsg(text, isUser) {
+			
+			function addMsg(html, isUser) {
 				const div = document.createElement('div');
 				div.className = \`flex \${isUser ? 'justify-end' : 'justify-start'}\`;
-				div.innerHTML = \`<div class="\${isUser ? 'bg-blue-600' : 'bg-slate-700'} rounded-lg p-3 max-w-[80%] text-sm">\${text}</div>\`;
+				div.innerHTML = \`<div class="\${isUser ? 'bg-blue-600' : 'bg-slate-700'} rounded-lg p-3 max-w-[85%] text-sm prose prose-invert">\${html}</div>\`;
 				chatHistory.appendChild(div);
 				chatHistory.scrollTop = chatHistory.scrollHeight;
 			}
+
+            function sendQuick(text) {
+                document.getElementById('chatInput').value = text;
+                document.getElementById('chatForm').requestSubmit();
+            }
 
 			document.getElementById('chatForm').addEventListener('submit', async (e) => {
 				e.preventDefault();
@@ -278,6 +346,14 @@ function htmlUI() {
 				
 				addMsg(query, true);
 				input.value = '';
+                
+                // Show loading state
+                const loadingDiv = document.createElement('div');
+                loadingDiv.id = 'loading';
+                loadingDiv.className = 'flex justify-start';
+                loadingDiv.innerHTML = '<div class="bg-slate-700 rounded-lg p-3 text-sm text-slate-400 animate-pulse">Thinking...</div>';
+                chatHistory.appendChild(loadingDiv);
+                chatHistory.scrollTop = chatHistory.scrollHeight;
 				
 				try {
 					const res = await fetch('/chat', {
@@ -285,9 +361,19 @@ function htmlUI() {
 						body: JSON.stringify({ query }),
 						headers: { 'Content-Type': 'application/json' }
 					});
+                    
+                    document.getElementById('loading').remove();
+                    
+                    if (res.status === 401) {
+                        addMsg("⚠️ Unauthorized. Please access via Cloudflare Access.", false);
+                        return;
+                    }
+
 					const data = await res.json();
-					addMsg(data.answer, false);
+                    // Render markdown answer
+                    addMsg(marked.parse(data.answer), false);
 				} catch(err) {
+                    if(document.getElementById('loading')) document.getElementById('loading').remove();
 					addMsg('Error getting response.', false);
 				}
 			});
@@ -298,14 +384,28 @@ function htmlUI() {
 }
 
 function htmlDashboard(items: any[]) {
-	const rows = items.map(i => `
-		<tr class="border-b border-slate-700">
-			<td class="p-4 text-emerald-400 font-mono">${i.gravity_score}</td>
-			<td class="p-4">${i.category}</td>
-			<td class="p-4 text-slate-300">${i.content} <br><span class="text-xs text-slate-500">${i.explanation || ''}</span></td>
+	const rows = items.map(i => {
+		let badgeColor = 'bg-slate-700 text-slate-300';
+		if (i.gravity_score >= 20) badgeColor = 'bg-red-900 text-red-200 border border-red-700';
+		else if (i.gravity_score >= 10) badgeColor = 'bg-orange-900 text-orange-200 border border-orange-700';
+		else if (i.gravity_score >= 5) badgeColor = 'bg-yellow-900 text-yellow-200 border border-yellow-700';
+
+		return `
+		<tr class="border-b border-slate-700 hover:bg-slate-800/50 transition">
+			<td class="p-4 font-mono">
+                <span class="px-2 py-1 rounded text-xs font-bold ${badgeColor}">${i.gravity_score}</span>
+            </td>
+			<td class="p-4">
+                <span class="px-2 py-1 rounded text-xs bg-slate-800 border border-slate-600">${i.category}</span>
+            </td>
+			<td class="p-4 text-slate-300">
+                <div class="mb-1">${i.content}</div>
+                <div class="text-xs text-slate-500 font-mono">${i.explanation || ''}</div>
+            </td>
 			<td class="p-4 text-slate-400 text-sm">${i.source}</td>
+            <td class="p-4 text-slate-500 text-xs text-right whitespace-nowrap">${new Date(i.created_at).toLocaleDateString()}</td>
 		</tr>
-	`).join('');
+	`}).join('');
 
 	return `
 	<!DOCTYPE html>
@@ -317,30 +417,37 @@ function htmlDashboard(items: any[]) {
 		<script src="https://cdn.tailwindcss.com"></script>
 	</head>
 	<body class="bg-slate-900 text-white min-h-screen p-8">
-		<div class="max-w-5xl mx-auto">
+		<div class="max-w-6xl mx-auto">
 			<header class="flex justify-between items-center mb-8">
 				<h1 class="text-3xl font-bold">Feedback Dashboard</h1>
 				<a href="/app" class="text-blue-400 hover:text-blue-300 underline">Back to Copilot</a>
 			</header>
 			
-			<div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+			<div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-2xl">
 				<table class="w-full text-left">
-					<thead class="bg-slate-700 text-slate-300">
+					<thead class="bg-slate-900 text-slate-400 uppercase text-xs tracking-wider">
 						<tr>
 							<th class="p-4">Gravity</th>
 							<th class="p-4">Category</th>
-							<th class="p-4">Feedback</th>
+							<th class="p-4 w-1/2">Feedback</th>
 							<th class="p-4">Source</th>
+                            <th class="p-4 text-right">Date</th>
 						</tr>
 					</thead>
-					<tbody>
+					<tbody class="divide-y divide-slate-700">
 						${rows}
 					</tbody>
 				</table>
-				${items.length === 0 ? '<div class="p-8 text-center text-slate-500">No feedback found. Ingest some data first!</div>' : ''}
+				${items.length === 0 ? '<div class="p-12 text-center text-slate-500">No feedback found. Ingest some data first!</div>' : ''}
 			</div>
 		</div>
 	</body>
 	</html>
 	`;
+}
+
+function requireAuth(request: Request): boolean {
+	const email = request.headers.get('Cf-Access-Authenticated-User-Email') ||
+		request.headers.get('cf-access-authenticated-user-email');
+	return !!email;
 }
