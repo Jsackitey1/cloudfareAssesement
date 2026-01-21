@@ -68,6 +68,11 @@ export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
 
+		// Redirect root to /app
+		if (request.method === 'GET' && url.pathname === '/') {
+			return Response.redirect(url.origin + '/app', 302);
+		}
+
 		// GET /app - Chat UI
 		if (request.method === 'GET' && url.pathname === '/app') {
 			return new Response(htmlUI(), {
