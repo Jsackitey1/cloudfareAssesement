@@ -200,8 +200,8 @@ export default {
 				// const auth = requireAuth(request);
 				// if (!auth) return new Response('Unauthorized', { status: 401 });
 
-				const body = await request.json() as { query: string };
-				const query = body.query;
+				const body = await request.json() as { message: string, query?: string };
+				const query = body.message || body.query;
 
 				// Step 1: Intent Extraction
 				const intentPrompt = `You are an intent router for a Product Feedback Copilot.
@@ -225,9 +225,11 @@ Rules:
 - Map intent:
   - top_issues: highest priority/highest pull/most urgent
   - bugs_recent: bugs/breakages in recent window (default 24h if unspecified)
-  - search: keyword mentions (extract term)
   - summary: trend summary (default days=7)
-  - issue_drilldown: specific issue id (extract id)
+  - If user wants details/analysis for a specific issue ID (UUID), choose issue_drilldown.
+  - params: { id: "extracted_uuid" }
+- If user searches for topic/keyword: search.
+  - params: { term: "search_term" }
   - help: capabilities/ambiguous
 - If user says show me everything: top_issues.`;
 
@@ -273,8 +275,19 @@ Rules:
 					const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE category='Bug' AND created_at >= ? ORDER BY gravity_score DESC, created_at DESC LIMIT 10`).bind(date).all();
 					results = res.results;
 				} else if (intent === 'search') {
-					const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE content LIKE ? ORDER BY gravity_score DESC, created_at DESC LIMIT 10`).bind(`%${params.term}%`).all();
-					results = res.results;
+					const term = intentData.params.term || '';
+					const result = await env.FEEDBACK_DB.prepare(
+						`SELECT * FROM feedback WHERE content LIKE ? OR category LIKE ? ORDER BY gravity_score DESC LIMIT 10`
+					).bind(`%${term}%`, `%${term}%`).all();
+					results = result.results;
+				} else if (intent === 'issue_drilldown') {
+					const id = intentData.params.id || '';
+					if (id) {
+						const result = await env.FEEDBACK_DB.prepare(
+							`SELECT * FROM feedback WHERE id = ? LIMIT 1`
+						).bind(id).first();
+						if (result) results = [result];
+					}
 				} else if (intent === 'summary') {
 					const days = params.days || 7;
 					const date = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
@@ -320,6 +333,11 @@ Schema:
 Rules:
 - Output JSON only.
 - Use ONLY the provided TOOL_DATA. Never invent ids or issues.
+- If TOOL_DATA contains a single issue (issue_drilldown):
+  - summary: Provide a concise "Impact Analysis" and "Recommended Next Steps".
+  - top_issues: Return the single issue with enhanced next_step.
+  - patterns: List specific keywords or entities from this issue.
+  - follow_up_question="Show similar issues"
 - If TOOL_DATA contains items, you MUST include them in "top_issues". Do not filter them out unless they are completely irrelevant.
 - If TOOL_DATA is strictly empty (array length 0), ONLY THEN return:
   summary.headline='No matching feedback found'
@@ -526,14 +544,28 @@ function htmlUI(topIssues: any[] = []) {
                             <span id="modalDate" class="text-slate-300">...</span>
                         </div>
                     </div>
+
+                    <!-- Copilot Analysis Section -->
+                    <div id="copilotSection" class="hidden bg-purple-900/10 rounded-xl p-4 border border-purple-700/30 space-y-2 animate-pulse">
+                         <h3 class="text-xs font-bold uppercase tracking-widest text-purple-400 flex items-center gap-2">
+                            <span>🤖 Copilot Analysis</span>
+                        </h3>
+                        <div id="copilotContent" class="text-sm text-slate-300 leading-relaxed space-y-2">
+                            Thinking...
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Footer -->
-                <div class="p-4 bg-slate-950/30 rounded-b-2xl border-t border-slate-800 flex justify-between items-center">
+                <div class="p-4 bg-slate-950/30 rounded-b-2xl border-t border-slate-800 flex flex-col gap-3">
                     <div class="flex items-center gap-2 text-emerald-400 bg-emerald-900/20 px-3 py-1.5 rounded-lg border border-emerald-900/50 w-full">
                         <span class="text-xs font-bold uppercase tracking-wider opacity-75">Suggestion:</span>
                         <span id="modalNextStep" class="text-sm font-medium truncate">...</span>
                     </div>
+                    
+                    <button id="askCopilotBtn" onclick="askCopilot()" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white py-2 rounded-lg text-sm font-medium transition-all border border-slate-700 hover:border-purple-500/50 flex items-center justify-center gap-2">
+                        <span class="text-purple-400">✨</span> Ask Copilot about this issue
+                    </button>
                 </div>
             </div>
         </div>
@@ -641,7 +673,18 @@ function htmlUI(topIssues: any[] = []) {
             }
 
             // Modal Logic
+            let currentIssueId = '';
+
             async function openIssue(id) {
+                currentIssueId = id;
+                
+                // Reset Copilot Section
+                document.getElementById('copilotSection').classList.add('hidden');
+                document.getElementById('copilotSection').classList.add('animate-pulse');
+                document.getElementById('copilotContent').innerText = 'Thinking...';
+                document.getElementById('askCopilotBtn').disabled = false;
+                document.getElementById('askCopilotBtn').innerHTML = '<span class="text-purple-400">✨</span> Ask Copilot about this issue';
+
                 // Show modal with loading state
                 const modal = document.getElementById('detailModal');
                 modal.classList.remove('hidden');
@@ -687,6 +730,45 @@ function htmlUI(topIssues: any[] = []) {
 
                 } catch (e) {
                      document.getElementById('modalContentText').innerHTML = \`<span class="text-red-400">Error: \${e.message}</span>\`;
+                }
+            }
+
+            async function askCopilot() {
+                if (!currentIssueId) return;
+                
+                const btn = document.getElementById('askCopilotBtn');
+                const box = document.getElementById('copilotSection');
+                const content = document.getElementById('copilotContent');
+                
+                // Loading State
+                btn.disabled = true;
+                btn.innerHTML = '<span class="animate-spin">⏳</span> Analyzing...';
+                box.classList.remove('hidden');
+                
+                try {
+                    const msg = \`Give me impact analysis and recommended next steps for issue \${currentIssueId}\`;
+                    const res = await fetch('/chat', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ message: msg })
+                    });
+                    
+                    if (!res.ok) throw new Error('Analysis failed');
+                    const data = await res.json();
+                    
+                    // Render Output
+                    box.classList.remove('animate-pulse');
+                    // Format the summary details nicely
+                    const details = data.summary?.details || "No analysis returned.";
+                    content.innerHTML = details.replace(/\\n/g, '<br/>');
+                    
+                    btn.innerHTML = '<span class="text-green-400">✔</span> Analysis Complete';
+                    
+                } catch (e) {
+                    box.classList.add('hidden');
+                    alert('Failed to get analysis: ' + e.message);
+                    btn.disabled = false;
+                    btn.innerHTML = '<span class="text-purple-400">✨</span> Ask Copilot about this issue';
                 }
             }
 
