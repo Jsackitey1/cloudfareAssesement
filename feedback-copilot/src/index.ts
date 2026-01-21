@@ -10,51 +10,90 @@ interface Env {
 // Workflows: Enriches feedback with AI
 // -----------------------------------------------------------------------------
 type FeedbackEvent = {
-	content: string;
 	source: string;
+	content: string;
+	created_at?: string;
 };
+
+type AnalysisResult = {
+	sentiment: number;
+	category: "Bug" | "UX" | "Feature" | "Other";
+	explanation: string;
+};
+
+const MESSY_SAMPLES = [
+	"login completely broken fix it!!!",
+	"I love the new dashboard, very clean",
+	"where is the export button? cant find it",
+	"app crashes when I upload large images",
+	"pricing page is confusing as hell",
+	"please add dark mode support",
+	"api returns 500 error on tuesdays",
+	"documentation link is broken",
+	"best tool I've used all year",
+	"loading takes forever on my phone",
+	"can I invite more than 5 users?",
+	"delete my account immediately"
+];
 
 export class FeedbackWorkflow extends WorkflowEntrypoint<Env, FeedbackEvent> {
 	async run(event: WorkflowEvent<FeedbackEvent>, step: WorkflowStep) {
-		const { content, source } = event.payload;
+		const { content, source, created_at } = event.payload;
 
-		// Step 1: Analyze text with AI
-		const analysis = await step.do('analyze-feedback', async () => {
-			const prompt = `
-			Analyze this feedback and output strict JSON.
-			Feedback: "${content}"
-			
-			Output format:
-			{
-				"sentiment": <number between 0 and 1, 1 is positive>,
-				"gravity_score": <number 1-10, 10 is critical>,
-				"category": "<string, e.g. Feature, Bug, Performance, Other>",
-                "explanation": "<short explanation>"
-			}
-			`;
+		// Step 1: AI Enrichment
+		const analysis = await step.do('ai-enrichment', async () => {
+			const systemPrompt = `You analyze raw user feedback and return STRICT JSON only.
+Return exactly this schema:
+{ "sentiment": number, "category": "Bug" | "UX" | "Feature" | "Other", "explanation": string }
+Rules:
+- Output JSON only. No markdown.
+- sentiment must be between -1 and 1.
+- category:
+  - Bug: broken/errors/crashes/regressions/can't log in/failures
+  - UX: confusing UI/slow/hard to find/friction/unclear flow
+  - Feature: new capability/integration/API/export/filters
+  - Other: praise/general comments/pricing with no concrete ask
+- explanation: 1 sentence, max 18 words.
+- If both bug and feature request appear, choose Bug.
+- If mostly negative but not broken, choose UX.`;
 
 			const response = await this.env.AI.run('@cf/meta/llama-3-8b-instruct', {
-				messages: [{ role: 'user', content: prompt }]
+				messages: [
+					{ role: 'system', content: systemPrompt },
+					{ role: 'user', content: content }
+				]
 			});
 
 			try {
-				let jsonStr = response.response;
+				// Heuristic cleanup if model outputs markdown code blocks
+				let jsonStr = (response as any).response;
 				const match = jsonStr.match(/\{[\s\S]*\}/);
 				if (match) jsonStr = match[0];
-				return JSON.parse(jsonStr);
+				return JSON.parse(jsonStr) as AnalysisResult;
 			} catch (e) {
-				return { sentiment: 0.5, gravity_score: 5, category: 'Unknown', explanation: 'Failed to analyze' };
+				return { sentiment: 0, category: 'Other', explanation: 'Failed to analyze' } as AnalysisResult;
 			}
 		});
 
-		// Step 2: Store in D1
-		await step.do('store-db', async () => {
+		// Step 2: Gravity Calculation and Persistence
+		await step.do('calculate-and-store', async () => {
+			// Gravity Calculation
+			const now = new Date();
+			const created = created_at ? new Date(created_at) : now;
+			const ageHours = Math.max(1, Math.floor((now.getTime() - created.getTime()) / (1000 * 60 * 60)));
+
+			let base = Math.abs(analysis.sentiment) * 10 / ageHours;
+			if (analysis.sentiment < 0 && analysis.category === 'Bug') {
+				base *= 2;
+			}
+			const gravityScore = Math.min(50, Math.round(base * 100) / 100);
+
+			// Persistence
 			const id = crypto.randomUUID();
-			const createdAt = new Date().toISOString();
 			await this.env.FEEDBACK_DB.prepare(
 				`INSERT INTO feedback (id, content, source, sentiment, gravity_score, category, explanation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 			)
-				.bind(id, content, source, analysis.sentiment, analysis.gravity_score, analysis.category, analysis.explanation, createdAt)
+				.bind(id, content, source, analysis.sentiment, gravityScore, analysis.category, analysis.explanation, created.toISOString())
 				.run();
 		});
 	}
@@ -92,18 +131,34 @@ export default {
 
 		// POST /ingest - Trigger Workflow
 		if (request.method === 'POST' && url.pathname === '/ingest') {
-			const body = await request.json() as { text: string; source: string };
-			const content = body.text;
-			if (!content) return new Response('Missing content', { status: 400 });
+			let content = '';
+			let source = 'api';
+
+			try {
+				const body = await request.json() as { text: string; source: string };
+				if (body.text) {
+					content = body.text;
+					source = body.source || 'api';
+				}
+			} catch (e) {
+				// Ignore JSON parse errors, fall through to random sample
+			}
+
+			if (!content) {
+				// Pick a random messy sample
+				content = MESSY_SAMPLES[Math.floor(Math.random() * MESSY_SAMPLES.length)];
+				source = 'random-generator';
+			}
 
 			await env.INGEST_WORKFLOW.create({
 				params: {
-					content: content,
-					source: body.source || 'api'
+					content,
+					source,
+					created_at: new Date().toISOString()
 				}
 			});
 
-			return new Response(JSON.stringify({ status: 'queued' }), {
+			return new Response(JSON.stringify({ ok: true, started: true }), {
 				headers: { 'Content-Type': 'application/json' }
 			});
 		}
