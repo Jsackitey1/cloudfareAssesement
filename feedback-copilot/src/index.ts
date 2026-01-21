@@ -151,7 +151,7 @@ export default {
             // if (!auth) return new Response('Unauthorized', { status: 401 });
 
             const { results } = await env.FEEDBACK_DB.prepare(
-                `SELECT * FROM feedback ORDER BY gravity_score DESC, created_at DESC LIMIT 5`
+                `SELECT * FROM feedback ORDER BY gravity_score DESC, created_at DESC LIMIT 25`
             ).all();
 
             return new Response(htmlUI(results), {
@@ -165,7 +165,7 @@ export default {
             // if (!auth) return new Response('Unauthorized', { status: 401 });
 
             const { results } = await env.FEEDBACK_DB.prepare(
-                `SELECT * FROM feedback WHERE status='open' ORDER BY gravity_score DESC, created_at DESC LIMIT 10`
+                `SELECT * FROM feedback WHERE status='open' ORDER BY gravity_score DESC, created_at DESC LIMIT 25`
             ).all();
             return new Response(htmlDashboard(results), {
                 headers: { 'Content-Type': 'text/html' },
@@ -318,18 +318,18 @@ Rules:
 
                 if (intent === 'top_issues') {
                     const result = await env.FEEDBACK_DB.prepare(
-                        `SELECT * FROM feedback WHERE status='open' ORDER BY gravity_score DESC, created_at DESC LIMIT 10`
+                        `SELECT * FROM feedback WHERE status='open' ORDER BY gravity_score DESC, created_at DESC LIMIT 25`
                     ).all();
                     results = result.results;
                 } else if (intent === 'bugs_recent') {
                     const days = params.days || (params.hours ? params.hours / 24 : 1);
                     const date = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-                    const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE status='open' AND category='Bug' AND created_at >= ? ORDER BY gravity_score DESC, created_at DESC LIMIT 10`).bind(date).all();
+                    const res = await env.FEEDBACK_DB.prepare(`SELECT * FROM feedback WHERE status='open' AND category='Bug' AND created_at >= ? ORDER BY gravity_score DESC, created_at DESC LIMIT 25`).bind(date).all();
                     results = res.results;
                 } else if (intent === 'search') {
                     const term = intentData.params.term || '';
                     const result = await env.FEEDBACK_DB.prepare(
-                        `SELECT * FROM feedback WHERE status='open' AND (content LIKE ? OR category LIKE ?) ORDER BY gravity_score DESC LIMIT 10`
+                        `SELECT * FROM feedback WHERE status='open' AND (content LIKE ? OR category LIKE ?) ORDER BY gravity_score DESC LIMIT 25`
                     ).bind(`%${term}%`, `%${term}%`).all();
                     results = result.results;
                 } else if (intent === 'issue_drilldown') {
@@ -948,7 +948,7 @@ function htmlDashboard(items: any[]) {
         }
 
         return `
-		<div class="bg-slate-900/50 rounded-xl border border-slate-700/50 p-5 hover:bg-slate-800/50 transition-all hover:scale-[1.01] hover:shadow-xl hover:shadow-purple-900/10 flex flex-col gap-3 group">
+		<div onclick="openIssue('${i.id}')" class="bg-slate-900/50 rounded-xl border border-slate-700/50 p-5 hover:bg-slate-800/50 transition-all hover:scale-[1.01] hover:shadow-xl hover:shadow-purple-900/10 flex flex-col gap-3 group cursor-pointer">
             <div class="flex justify-between items-start">
                 <div class="flex flex-col">
                     <span class="text-2xl font-bold text-white group-hover:text-purple-400 transition-colors">${i.gravity_score}</span>
@@ -994,7 +994,7 @@ function htmlDashboard(items: any[]) {
                 </a>
 			</header>
 
-            <!-- Stats Grid (Computed on fly for visuals) -->
+            <!-- Stats Grid -->
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div class="bg-slate-900/50 p-4 rounded-xl border border-slate-700/50">
                     <div class="text-slate-500 text-xs uppercase tracking-wider font-bold mb-1">Total Signals</div>
@@ -1016,10 +1016,235 @@ function htmlDashboard(items: any[]) {
             
             ${items.length === 0 ? '<div class="text-center text-slate-600 py-12 italic">No feedback signals detected in sector.</div>' : ''}
 		</div>
+
+        <!-- Detail Modal -->
+        <div id="detailModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center z-50 p-4 transition-opacity duration-300 opacity-0" onclick="if(event.target === this) closeModal()">
+            <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-2xl shadow-2xl shadow-purple-900/50 transform scale-95 transition-all duration-300" id="modalContent">
+                <!-- Header -->
+                <div class="p-6 border-b border-slate-800 flex justify-between items-start">
+                    <div class="space-y-2">
+                        <div class="flex items-center gap-3">
+                            <span id="modalBadge" class="text-xs font-bold px-2 py-1 rounded border bg-blue-900/30 text-blue-300 border-blue-700/50">High</span>
+                             <span id="modalCategory" class="text-xs text-slate-400 border border-slate-700 px-2 py-1 rounded">Bug</span>
+                             <span id="modalPull" class="text-xs font-mono font-bold text-purple-400 bg-purple-900/30 px-2 py-1 rounded">Pull: 0</span>
+                        </div>
+                         <h2 class="text-xl font-bold text-white leading-tight mt-2" id="modalTitle">Issue Title</h2>
+                    </div>
+                    <button onclick="closeModal()" class="text-slate-500 hover:text-white transition-colors bg-slate-800 hover:bg-slate-700 rounded-lg p-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    </button>
+                </div>
+
+                <!-- Body -->
+                <div class="p-6 space-y-6">
+                    <div>
+                        <h3 class="text-xs font-bold uppercase tracking-widest text-slate-500 mb-2">Feedback</h3>
+                        <p id="modalContentText" class="text-lg text-slate-200 leading-relaxed font-medium">...</p>
+                    </div>
+
+                    <div class="bg-slate-800/50 rounded-xl p-4 border border-slate-700/50">
+                        <h3 class="text-xs font-bold uppercase tracking-widest text-indigo-400 mb-1 flex items-center gap-2">
+                            <span>✨ Analysis</span>
+                        </h3>
+                        <p id="modalExplanation" class="text-sm text-slate-400 leading-relaxed">...</p>
+                    </div>
+
+                    <div class="grid grid-cols-3 gap-4 text-xs text-slate-500 border-t border-slate-800 pt-4">
+                        <div>
+                            <span class="block uppercase tracking-wider font-bold mb-1 opacity-50">Source</span>
+                            <span id="modalSource" class="text-slate-300">...</span>
+                        </div>
+                        <div>
+                            <span class="block uppercase tracking-wider font-bold mb-1 opacity-50">Score</span>
+                            <span id="modalSentiment" class="text-slate-300">...</span>
+                        </div>
+                        <div>
+                            <span class="block uppercase tracking-wider font-bold mb-1 opacity-50">Created</span>
+                            <span id="modalDate" class="text-slate-300">...</span>
+                        </div>
+                    </div>
+
+                    <!-- Copilot Analysis Section -->
+                    <div id="copilotSection" class="hidden bg-purple-900/10 rounded-xl p-4 border border-purple-700/30 space-y-2 animate-pulse">
+                         <h3 class="text-xs font-bold uppercase tracking-widest text-purple-400 flex items-center gap-2">
+                            <span>🤖 Copilot Analysis</span>
+                        </h3>
+                        <div id="copilotContent" class="text-sm text-slate-300 leading-relaxed space-y-2">
+                            Thinking...
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Footer -->
+                <div class="p-4 bg-slate-950/30 rounded-b-2xl border-t border-slate-800 flex gap-2">
+                     <button id="askCopilotBtn" onclick="askCopilot()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white py-2 rounded-lg text-sm font-medium transition-all border border-slate-700 hover:border-purple-500/50 flex items-center justify-center gap-2">
+                        <span class="text-purple-400">✨</span> Ask Copilot
+                    </button>
+                     <button id="closeIssueBtn" onclick="closeIssue()" class="flex-1 bg-red-900/20 hover:bg-red-900/40 text-red-300 py-2 rounded-lg text-sm font-medium transition-all border border-red-900/50 hover:border-red-500/50 flex items-center justify-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                        Close Issue
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <script>
+            let currentIssueId = '';
+
+            async function openIssue(id) {
+                currentIssueId = id;
+                
+                // Reset Copilot Section
+                document.getElementById('copilotSection').classList.add('hidden');
+                document.getElementById('copilotSection').classList.add('animate-pulse');
+                document.getElementById('copilotContent').innerText = 'Thinking...';
+                document.getElementById('askCopilotBtn').disabled = false;
+                document.getElementById('askCopilotBtn').innerHTML = '<span class="text-purple-400">✨</span> Ask Copilot';
+
+                // Reset Close Button
+                const closeBtn = document.getElementById('closeIssueBtn');
+                closeBtn.disabled = false;
+                closeBtn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Close Issue';
+                closeBtn.className = "flex-1 bg-red-900/20 hover:bg-red-900/40 text-red-300 py-2 rounded-lg text-sm font-medium transition-all border border-red-900/50 hover:border-red-500/50 flex items-center justify-center gap-2";
+
+                // Show modal with loading state
+                const modal = document.getElementById('detailModal');
+                modal.classList.remove('hidden');
+                setTimeout(() => {
+                    modal.classList.remove('opacity-0');
+                    document.getElementById('modalContent').classList.remove('scale-95');
+                    document.getElementById('modalContent').classList.add('scale-100');
+                }, 10);
+
+                // Reset content
+                document.getElementById('modalTitle').innerText = 'Loading...';
+                document.getElementById('modalContentText').innerText = 'Fetching details...';
+
+                try {
+                    const res = await fetch(\`/issue?id=\${id}\`);
+                    if(!res.ok) throw new Error('Failed to load');
+                    const data = await res.json();
+
+                    // Populate
+                    document.getElementById('modalTitle').innerText = data.content.substring(0, 50) + (data.content.length > 50 ? '...' : '');
+                    document.getElementById('modalContentText').innerText = data.content;
+                    document.getElementById('modalCategory').innerText = data.category;
+                    document.getElementById('modalPull').innerText = \`Pull: \${data.gravity_score}\`;
+                    document.getElementById('modalSource').innerText = data.source;
+                    document.getElementById('modalSentiment').innerText = data.sentiment;
+                    document.getElementById('modalDate').innerText = new Date(data.created_at).toLocaleDateString();
+                    document.getElementById('modalExplanation').innerText = data.explanation || "No AI explanation available.";
+
+                    // Heat Badge Logic
+                    const badge = document.getElementById('modalBadge');
+                    let badgeClass = 'bg-blue-900/30 text-blue-300 border-blue-700/50';
+                    let heatTxt = 'Low';
+                    if (data.gravity_score >= 6) { badgeClass = 'bg-red-900/30 text-red-300 border-red-500/50'; heatTxt = 'High'; }
+                    else if (data.gravity_score >= 3) { badgeClass = 'bg-amber-900/30 text-amber-300 border-amber-500/50'; heatTxt = 'Medium'; }
+                    badge.className = \`text-xs font-bold px-2 py-1 rounded border \${badgeClass}\`;
+                    badge.innerText = heatTxt;
+
+                    // Status Check
+                    if (data.status === 'closed') {
+                         closeBtn.disabled = true;
+                         closeBtn.innerHTML = "Closed ✓";
+                         closeBtn.className = "flex-1 bg-slate-800/50 text-slate-500 py-2 rounded-lg text-sm font-medium border border-slate-800 cursor-not-allowed flex items-center justify-center gap-2";
+                    }
+
+                } catch (e) {
+                     document.getElementById('modalContentText').innerHTML = \`<span class="text-red-400">Error: \${e.message}</span>\`;
+                }
+            }
+
+            async function closeIssue() {
+                if (!confirm("Are you sure you want to mark this issue as closed?")) return;
+                
+                const btn = document.getElementById('closeIssueBtn');
+                const originalText = btn.innerHTML;
+                btn.innerHTML = "Closing...";
+                btn.disabled = true;
+
+                try {
+                     const res = await fetch('/issue/close', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ id: currentIssueId })
+                    });
+                    if (!res.ok) throw new Error('Failed to close');
+                    
+                    // Success UI
+                    btn.innerHTML = "Closed ✓";
+                    btn.className = "flex-1 bg-slate-800/50 text-slate-500 py-2 rounded-lg text-sm font-medium border border-slate-800 cursor-not-allowed flex items-center justify-center gap-2";
+                    
+                    // Reload the page after a short delay to reflect the change
+                    setTimeout(() => {
+                        closeModal();
+                        window.location.reload();
+                    }, 1000);
+                } catch (e) {
+                    alert(e.message);
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
+                }
+            }
+
+            function closeModal() {
+                 const modal = document.getElementById('detailModal');
+                 modal.classList.add('opacity-0');
+                 document.getElementById('modalContent').classList.add('scale-95');
+                 setTimeout(() => {
+                    modal.classList.add('hidden');
+                 }, 300);
+            }
+
+            async function askCopilot() {
+                if (!currentIssueId) return;
+                
+                const btn = document.getElementById('askCopilotBtn');
+                const box = document.getElementById('copilotSection');
+                const content = document.getElementById('copilotContent');
+                
+                // Loading State
+                btn.disabled = true;
+                btn.innerHTML = '<span class="animate-spin">⏳</span> Analyzing...';
+                box.classList.remove('hidden');
+                
+                try {
+                    const msg = \`Give me impact analysis and recommended next steps for issue \${currentIssueId}\`;
+                    const res = await fetch('/chat', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ message: msg })
+                    });
+                    
+                    if (!res.ok) throw new Error('Analysis failed');
+                    const data = await res.json();
+                    
+                    // Render Output
+                    box.classList.remove('animate-pulse');
+                    const details = data.summary?.details || "No analysis returned.";
+                    content.innerHTML = details.replace(/\\n/g, '<br/>');
+                    
+                    btn.innerHTML = '<span class="text-green-400">✔</span> Analysis Complete';
+                    
+                } catch (e) {
+                    box.classList.add('hidden');
+                    alert('Failed to get analysis: ' + e.message);
+                    btn.disabled = false;
+                    btn.innerHTML = '<span class="text-purple-400">✨</span> Ask Copilot';
+                }
+            }
+
+            // Close with Escape
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') closeModal();
+            });
+        </script>
 	</body>
 	</html>
 	`;
 }
+
 
 
 async function runAIWithRetry(env: Env, model: any, inputs: any, retries = 2) {

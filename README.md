@@ -11,8 +11,8 @@ An AI-powered product feedback analysis tool built on Cloudflare's developer pla
 - **AI-Powered Analysis** — Automatically categorizes feedback (Bug, UX, Feature, Other), extracts sentiment, and generates explanations using Llama 3.1
 - **Gravity Scoring** — Prioritizes issues using a custom algorithm that weighs sentiment, category, and recency
 - **Conversational Copilot** — Natural language interface to query feedback trends (e.g., "Show me critical bugs from the last 24 hours")
-- **Issue Management** — Drill-down views with AI-generated impact analysis and the ability to close resolved issues
-- **Real-time Dashboard** — Visual overview of all feedback sorted by priority
+- **Issue Management** — Drill-down views with "Ask Copilot" button for AI-generated impact analysis and recommended next steps, plus the ability to close resolved issues
+- **Real-time Dashboard** — Visual overview of all feedback sorted by priority with click-to-drill-down functionality
 
 ---
 
