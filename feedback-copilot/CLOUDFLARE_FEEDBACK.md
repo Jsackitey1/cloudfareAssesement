@@ -44,6 +44,9 @@ This document tracks challenges encountered while building the `feedback-copilot
 - **HEAD Request 404s**: `wrangler dev` (or Miniflare) returned 404s for HEAD requests on routes that worked perfectly with GET. This confused our availability checks.
 - **Port Conflicts**: Running multiple `npm run dev` instances spawned background processes on different ports (8787, 8788, etc.), which sometimes led to "zombie" servers and confusion about which code version was active. Manual `pkill` was required.
 
+### Account & Access
+- **Zero Trust Account State**: Detailed that Cloudflare One access was granted even though the Zero Trust account creation process was incomplete/abandoned. Unsure if this is a bug or intended "soft" provisioning state.
+
 ## Positive Cloudflare Experiences
 - **Unified Ecosystem**: Binding D1 (database), Workers AI, and Workflows together in a single `wrangler.toml` feels very powerful and cohesive.
 - **Local Simulation**: `wrangler dev` (local mode) provides an excellent development experience by simulating D1 and Workflows locally, allowing for fast iteration without deployment.
