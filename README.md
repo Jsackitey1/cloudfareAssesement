@@ -58,36 +58,6 @@ An AI-powered product feedback analysis tool built on Cloudflare's developer pla
 
 ---
 
-## Local Development
-
-```bash
-# Install dependencies
-npm install
-
-# Create D1 database (first time only)
-npx wrangler d1 create feedback-db
-
-# Apply schema
-npx wrangler d1 execute feedback-db --local --file=schema.sql
-
-# Start dev server
-npm run dev
-```
-
----
-
-## Deployment
-
-```bash
-# Apply schema to production
-npx wrangler d1 execute feedback-db --remote --file=schema.sql
-
-# Deploy to Cloudflare
-npx wrangler deploy
-```
-
----
-
 ## How It Works
 
 1. **Ingest** — Raw feedback is submitted via `/ingest` and queued in a Cloudflare Workflow
