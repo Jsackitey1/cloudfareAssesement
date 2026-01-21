@@ -57,7 +57,7 @@ Rules:
 - If both bug and feature request appear, choose Bug.
 - If mostly negative but not broken, choose UX.`;
 
-			const response = await runAIWithRetry(this.env, '@cf/meta/llama-3-8b-instruct', {
+			const response = await runAIWithRetry(this.env, '@cf/meta/llama-3.1-8b-instruct', {
 				messages: [
 					{ role: 'system', content: systemPrompt },
 					{ role: 'user', content: content }
@@ -210,7 +210,7 @@ Rules:
   - help: capabilities/ambiguous
 - If user says show me everything: top_issues.`;
 
-				const intentResp = await runAIWithRetry(env, '@cf/meta/llama-3-8b-instruct', {
+				const intentResp = await runAIWithRetry(env, '@cf/meta/llama-3.1-8b-instruct', {
 					messages: [
 						{ role: 'system', content: intentPrompt },
 						{ role: 'user', content: query }
@@ -303,7 +303,7 @@ Rules:
 - stats should include: total_items, bug_count, ux_count, feature_count (as strings).`;
 
 				const toolData = `TOOL_DATA: ${JSON.stringify(results)}`;
-				const answerResp = await runAIWithRetry(env, '@cf/meta/llama-3-8b-instruct', {
+				const answerResp = await runAIWithRetry(env, '@cf/meta/llama-3.1-8b-instruct', {
 					messages: [
 						{ role: 'system', content: answerPrompt },
 						{ role: 'user', content: `USER_QUESTION: ${query}\nTOOL_DATA: ${toolData}\nNOW_ISO: ${new Date().toISOString()}` }
@@ -316,14 +316,19 @@ Rules:
 					let jsonStr = (answerResp as any).response;
 					console.log("Raw AI Response:", jsonStr);
 
-					// Robust JSON extraction
-					jsonStr = jsonStr.replace(/```json/g, '').replace(/```/g, '');
+					// 1. Strip Markdown Code Blocks
+					jsonStr = jsonStr.replace(/```json/gi, '').replace(/```/g, '');
+
+					// 2. Extract JSON Object (Find outer braces)
 					const firstOpen = jsonStr.indexOf('{');
 					const lastClose = jsonStr.lastIndexOf('}');
-					if (firstOpen !== -1 && lastClose !== -1) {
+
+					if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
 						jsonStr = jsonStr.substring(firstOpen, lastClose + 1);
+						parsedAnswer = JSON.parse(jsonStr);
+					} else {
+						throw new Error("No JSON object found in response");
 					}
-					parsedAnswer = JSON.parse(jsonStr);
 				} catch (e) {
 					console.error("Failed to parse Final Answer JSON", e);
 					parsedAnswer = {
