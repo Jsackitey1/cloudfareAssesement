@@ -1,5 +1,5 @@
 interface Env {
-    DB: D1Database;
+    FEEDBACK_DB: D1Database;
     AI: Ai;
-    WORKFLOW: Workflow;
+    INGEST_WORKFLOW: Workflow;
 }
