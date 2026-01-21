@@ -1,63 +1,63 @@
 import { WorkflowEntrypoint, WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 
 interface Env {
-    DB: D1Database;
-    AI: any;
-    WORKFLOW: Workflow;
+	FEEDBACK_DB: D1Database;
+	AI: any;
+	INGEST_WORKFLOW: Workflow;
 }
 
 // -----------------------------------------------------------------------------
 // Workflows: Enriches feedback with AI
 // -----------------------------------------------------------------------------
 type FeedbackEvent = {
-    id?: number;
-    text: string;
-    source: string;
+	content: string;
+	source: string;
 };
 
 export class FeedbackWorkflow extends WorkflowEntrypoint<Env, FeedbackEvent> {
-    async run(event: WorkflowEvent<FeedbackEvent>, step: WorkflowStep) {
-        const { text, source } = event.payload;
+	async run(event: WorkflowEvent<FeedbackEvent>, step: WorkflowStep) {
+		const { content, source } = event.payload;
 
-        // Step 1: Analyze text with AI
-        const analysis = await step.do('analyze-feedback', async () => {
-            const prompt = `
+		// Step 1: Analyze text with AI
+		const analysis = await step.do('analyze-feedback', async () => {
+			const prompt = `
 			Analyze this feedback and output strict JSON.
-			Feedback: "${text}"
+			Feedback: "${content}"
 			
 			Output format:
 			{
 				"sentiment": <number between 0 and 1, 1 is positive>,
-				"gravity_score": <integer 1-10, 10 is critical>,
-				"category": "<string, e.g. Feature, Bug, Performance, Other>"
+				"gravity_score": <number 1-10, 10 is critical>,
+				"category": "<string, e.g. Feature, Bug, Performance, Other>",
+                "explanation": "<short explanation>"
 			}
 			`;
 
-            const response = await this.env.AI.run('@cf/meta/llama-3-8b-instruct', {
-                messages: [{ role: 'user', content: prompt }]
-            });
+			const response = await this.env.AI.run('@cf/meta/llama-3-8b-instruct', {
+				messages: [{ role: 'user', content: prompt }]
+			});
 
-            // Simple parsing, assuming strict JSON as requested, but robust fallback
-            try {
-                let jsonStr = response.response;
-                // Attempt to find JSON if wrapped in markdown
-                const match = jsonStr.match(/\{[\s\S]*\}/);
-                if (match) jsonStr = match[0];
-                return JSON.parse(jsonStr);
-            } catch (e) {
-                return { sentiment: 0.5, gravity_score: 5, category: 'Unknown' };
-            }
-        });
+			try {
+				let jsonStr = response.response;
+				const match = jsonStr.match(/\{[\s\S]*\}/);
+				if (match) jsonStr = match[0];
+				return JSON.parse(jsonStr);
+			} catch (e) {
+				return { sentiment: 0.5, gravity_score: 5, category: 'Unknown', explanation: 'Failed to analyze' };
+			}
+		});
 
-        // Step 2: Store in D1
-        await step.do('store-db', async () => {
-            await this.env.DB.prepare(
-                `INSERT INTO feedback (text, source, sentiment, gravity_score, category) VALUES (?, ?, ?, ?, ?)`
-            )
-                .bind(text, source, analysis.sentiment, analysis.gravity_score, analysis.category)
-                .run();
-        });
-    }
+		// Step 2: Store in D1
+		await step.do('store-db', async () => {
+			const id = crypto.randomUUID();
+			const createdAt = new Date().toISOString();
+			await this.env.FEEDBACK_DB.prepare(
+				`INSERT INTO feedback (id, content, source, sentiment, gravity_score, category, explanation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+			)
+				.bind(id, content, source, analysis.sentiment, analysis.gravity_score, analysis.category, analysis.explanation, createdAt)
+				.run();
+		});
+	}
 }
 
 
@@ -65,79 +65,80 @@ export class FeedbackWorkflow extends WorkflowEntrypoint<Env, FeedbackEvent> {
 // Main Worker: Router & UI
 // -----------------------------------------------------------------------------
 export default {
-    async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-        const url = new URL(request.url);
+	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+		const url = new URL(request.url);
 
-        // GET /app - Chat UI
-        if (request.method === 'GET' && url.pathname === '/app') {
-            return new Response(htmlUI(), {
-                headers: { 'Content-Type': 'text/html' },
-            });
-        }
+		// GET /app - Chat UI
+		if (request.method === 'GET' && url.pathname === '/app') {
+			return new Response(htmlUI(), {
+				headers: { 'Content-Type': 'text/html' },
+			});
+		}
 
-        // GET /dashboard - Simple List
-        if (request.method === 'GET' && url.pathname === '/dashboard') {
-            const { results } = await env.DB.prepare(
-                `SELECT * FROM feedback ORDER BY gravity_score DESC, created_at DESC LIMIT 50`
-            ).all();
-            return new Response(htmlDashboard(results), {
-                headers: { 'Content-Type': 'text/html' },
-            });
-        }
+		// GET /dashboard - Simple List
+		if (request.method === 'GET' && url.pathname === '/dashboard') {
+			const { results } = await env.FEEDBACK_DB.prepare(
+				`SELECT * FROM feedback ORDER BY gravity_score DESC, created_at DESC LIMIT 50`
+			).all();
+			return new Response(htmlDashboard(results), {
+				headers: { 'Content-Type': 'text/html' },
+			});
+		}
 
-        // POST /ingest - Trigger Workflow
-        if (request.method === 'POST' && url.pathname === '/ingest') {
-            const body = await request.json() as { text: string; source: string };
-            if (!body.text) return new Response('Missing text', { status: 400 });
+		// POST /ingest - Trigger Workflow
+		if (request.method === 'POST' && url.pathname === '/ingest') {
+			const body = await request.json() as { text: string; source: string };
+			const content = body.text;
+			if (!content) return new Response('Missing content', { status: 400 });
 
-            await env.WORKFLOW.create({
-                params: {
-                    text: body.text,
-                    source: body.source || 'api'
-                }
-            });
+			await env.INGEST_WORKFLOW.create({
+				params: {
+					content: content,
+					source: body.source || 'api'
+				}
+			});
 
-            return new Response(JSON.stringify({ status: 'queued' }), {
-                headers: { 'Content-Type': 'application/json' }
-            });
-        }
+			return new Response(JSON.stringify({ status: 'queued' }), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
 
-        // POST /chat - RAG-lite
-        if (request.method === 'POST' && url.pathname === '/chat') {
-            const body = await request.json() as { query: string };
-            const query = body.query;
+		// POST /chat - RAG-lite
+		if (request.method === 'POST' && url.pathname === '/chat') {
+			const body = await request.json() as { query: string };
+			const query = body.query;
 
-            // 1. Fetch relevant context (naive: top gravity items)
-            const { results } = await env.DB.prepare(
-                `SELECT text, category, gravity_score FROM feedback ORDER BY gravity_score DESC LIMIT 20`
-            ).all();
-            const context = results.map((r: any) => `- [${r.category}, Score ${r.gravity_score}]: ${r.text}`).join('\n');
+			// 1. Fetch relevant context
+			const { results } = await env.FEEDBACK_DB.prepare(
+				`SELECT content, category, gravity_score, explanation FROM feedback ORDER BY gravity_score DESC LIMIT 20`
+			).all();
+			const context = results.map((r: any) => `- [${r.category}, Score ${r.gravity_score}]: ${r.content} (${r.explanation})`).join('\n');
 
-            // 2. Generate answer
-            const systemPrompt = `You are Feedback Copilot. Answer the user query based on the feedback context provided. Verify your claims with the context.`;
-            const userPrompt = `Context:\n${context}\n\nUser Query: ${query}`;
+			// 2. Generate answer
+			const systemPrompt = `You are Feedback Copilot. Answer the user query based on the feedback context provided. Verify your claims with the context.`;
+			const userPrompt = `Context:\n${context}\n\nUser Query: ${query}`;
 
-            const response = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: userPrompt }
-                ]
-            });
+			const response = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
+				messages: [
+					{ role: 'system', content: systemPrompt },
+					{ role: 'user', content: userPrompt }
+				]
+			});
 
-            return new Response(JSON.stringify({ answer: response.response, contextUsed: results.length }), {
-                headers: { 'Content-Type': 'application/json' }
-            });
-        }
+			return new Response(JSON.stringify({ answer: response.response, contextUsed: results.length }), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
 
-        return new Response('Not Found', { status: 404 });
-    },
+		return new Response('Not Found', { status: 404 });
+	},
 };
 
 // -----------------------------------------------------------------------------
 // UI Helpers
 // -----------------------------------------------------------------------------
 function htmlUI() {
-    return `
+	return `
 	<!DOCTYPE html>
 	<html lang="en">
 	<head>
@@ -189,7 +190,7 @@ function htmlUI() {
 				
 				await fetch('/ingest', {
 					method: 'POST',
-					body: JSON.stringify({ text, source }),
+					body: JSON.stringify({ text, source }), // API expects text/source in body, worker maps text->content
 					headers: { 'Content-Type': 'application/json' }
 				});
 				
@@ -237,16 +238,16 @@ function htmlUI() {
 }
 
 function htmlDashboard(items: any[]) {
-    const rows = items.map(i => `
+	const rows = items.map(i => `
 		<tr class="border-b border-slate-700">
 			<td class="p-4 text-emerald-400 font-mono">${i.gravity_score}</td>
 			<td class="p-4">${i.category}</td>
-			<td class="p-4 text-slate-300">${i.text}</td>
+			<td class="p-4 text-slate-300">${i.content} <br><span class="text-xs text-slate-500">${i.explanation || ''}</span></td>
 			<td class="p-4 text-slate-400 text-sm">${i.source}</td>
 		</tr>
 	`).join('');
 
-    return `
+	return `
 	<!DOCTYPE html>
 	<html lang="en">
 	<head>

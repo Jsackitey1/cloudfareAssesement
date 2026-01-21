@@ -1,10 +1,11 @@
-DROP TABLE IF EXISTS feedback;
-CREATE TABLE feedback (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  text TEXT NOT NULL,
-  source TEXT,
-  sentiment REAL,
-  gravity_score INTEGER,
-  category TEXT,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+DROP TABLE IF EXISTS feedback; 
+CREATE TABLE feedback ( 
+  id TEXT PRIMARY KEY, 
+  source TEXT, 
+  content TEXT, 
+  sentiment REAL, 
+  category TEXT, 
+  explanation TEXT, 
+  gravity_score REAL, 
+  created_at TEXT 
 );
