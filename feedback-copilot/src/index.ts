@@ -288,7 +288,8 @@ Schema:
 Rules:
 - Output JSON only.
 - Use ONLY the provided TOOL_DATA. Never invent ids or issues.
-- If TOOL_DATA is empty, return:
+- If TOOL_DATA contains items, you MUST include them in "top_issues". Do not filter them out unless they are completely irrelevant.
+- If TOOL_DATA is strictly empty (array length 0), ONLY THEN return:
   summary.headline='No matching feedback found'
   top_issues=[]
   patterns=[]
